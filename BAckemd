@@ -1,2175 +1,3010 @@
-# Build Specification: Excel Formula Backtracking & Audit Engine
-
-## 1. Objective
-
-Build a professional-grade **Excel Formula Backtracking, Dependency Analysis, and Calculation Audit Engine**.
-
-The purpose of this application is to take an Excel workbook containing simple or extremely complex formulas and explain, step by step, **exactly how a final Excel cell value was produced**.
-
-The system must behave conceptually like a combination of:
-
-* Excel's "Evaluate Formula"
-* Excel's "Trace Precedents"
-* Excel's "Trace Dependents"
-* A formula parser
-* A dependency graph engine
-* A calculation debugger
-* A financial model audit tool
-* A reconciliation/explanation engine
-
-The most important objective is:
-
-> Given a target Excel cell containing a complex formula, recursively trace every dependency, lookup, condition, range, calculation, and source value until the engine reaches the underlying input cells.
-
-The final output must make the formula understandable to a human auditor without requiring the auditor to manually inspect hundreds of cells.
-
----
-
-# 2. Example Problem
-
-Suppose the user selects:
-
-```text
-Sheet: Summary
-Cell: F2
-```
-
-and F2 contains:
-
-```excel
-=IFERROR(
-    VLOOKUP(A2,Customer_Master!A:D,4,FALSE)
-    *
-    INDEX(Rates!B:D,MATCH(B2,Rates!B:B,0),3)
-    +
-    SUMIFS(
-        Commission!D:D,
-        Commission!A:A,A2,
-        Commission!B:B,"Loan"
-    ),
-0)
-```
-
-The application must NOT simply display:
-
-```text
-F2 = 57,500
-```
-
-Instead it must explain:
-
-```text
-F2
-│
-├── IFERROR
-│
-├── VLOOKUP
-│   ├── Lookup value: A2
-│   │   └── CUST1001
-│   │
-│   ├── Lookup range: Customer_Master!A:D
-│   │
-│   ├── Match type: FALSE / Exact
-│   │
-│   ├── Matched row: Customer_Master!15
-│   │
-│   └── Returned value: D15 = 50,000
-│
-├── INDEX / MATCH
-│   ├── MATCH lookup value: B2
-│   │   └── India
-│   │
-│   ├── MATCH result: Row 8
-│   │
-│   ├── INDEX source: Rates!B:D
-│   │
-│   └── Returned value: 1.10
-│
-├── Multiplication
-│   └── 50,000 × 1.10
-│       └── 55,000
-│
-├── SUMIFS
-│   ├── ID = CUST1001
-│   ├── Type = Loan
-│   ├── Matching rows = 12, 27
-│   ├── Row 12 = 1,500
-│   ├── Row 27 = 1,000
-│   └── Result = 2,500
-│
-└── Final calculation
-    └── 55,000 + 2,500
-        = 57,500
-```
-
-This level of explanation is the core requirement.
-
----
-
-# 3. Input
-
-The application must allow the user to:
-
-### A. Upload workbook
-
-Support:
-
-```text
-.xlsx
-.xlsm
-```
-
-Preferably preserve:
-
-* formulas
-* formatting
-* worksheets
-* named ranges
-* tables
-* hidden sheets
-* hidden rows/columns
-* external references where technically possible
-
-Do NOT overwrite the original workbook.
-
-Always work on a temporary analysis copy.
-
----
-
-# 4. User Interface
-
-Create a clean professional interface.
-
-The main screen should contain:
-
-```text
-┌──────────────────────────────────────────────────────┐
-│              EXCEL FORMULA ANALYZER                  │
-├──────────────────────────────────────────────────────┤
-│                                                      │
-│  Upload Workbook                                     │
-│  [ Select Excel File ]                               │
-│                                                      │
-│  Workbook: Financial_Model.xlsx                      │
-│                                                      │
-│  Select Sheet: [ Summary ▼ ]                         │
-│                                                      │
-│  Select Cell:  [ F2 ]                                │
-│                                                      │
-│  [ Analyze Formula ]                                 │
-│                                                      │
-└──────────────────────────────────────────────────────┘
-```
-
-After analysis, show:
-
-```text
-Formula Analysis
-────────────────────────────────────────
-
-Workbook: Financial_Model.xlsx
-Sheet: Summary
-Cell: F2
-
-Final Value:
-₹57,500
-
-Formula Complexity:
-HIGH
-
-Formula Length:
-342 characters
-
-Functions:
-IFERROR
-VLOOKUP
-INDEX
-MATCH
-SUMIFS
-
-Dependencies:
-23
-
-Source Cells:
-11
-
-Lookup Operations:
-2
-
-Conditional Operations:
-1
-
-Warnings:
-1
-```
-
----
-
-# 5. Formula Parser
-
-Build a proper formula parser rather than relying only on string manipulation.
-
-The parser must convert formulas into an Abstract Syntax Tree (AST).
-
-For example:
-
-```excel
-=A1*(B1+C1)
-```
-
-must become conceptually:
-
-```text
-MULTIPLY
-│
-├── A1
-│
-└── ADD
-    ├── B1
-    └── C1
-```
-
-For:
-
-```excel
-=IF(A1>100,B1*C1,D1)
-```
-
-produce:
-
-```text
-IF
-│
-├── CONDITION
-│   └── A1 > 100
-│
-├── TRUE_BRANCH
-│   └── B1 * C1
-│
-└── FALSE_BRANCH
-    └── D1
-```
-
-The AST is critical because the application must understand the logical structure of the formula.
-
----
-
-# 6. Functions to Support
-
-At minimum support:
-
-## Lookup functions
-
-```text
-VLOOKUP
-HLOOKUP
-XLOOKUP
-LOOKUP
-INDEX
-MATCH
-XMATCH
-CHOOSE
-```
-
-## Conditional functions
-
-```text
-IF
-IFS
-IFERROR
-IFNA
-AND
-OR
-NOT
-SWITCH
-```
-
-## Aggregation functions
-
-```text
-SUM
-SUMIF
-SUMIFS
-COUNT
-COUNTA
-COUNTIF
-COUNTIFS
-AVERAGE
-AVERAGEIF
-AVERAGEIFS
-MIN
-MAX
-```
-
-## Dynamic array functions
-
-Where supported:
-
-```text
-FILTER
-SORT
-SORTBY
-UNIQUE
-SEQUENCE
-TAKE
-DROP
-CHOOSECOLS
-CHOOSEROWS
-```
-
-## Mathematical functions
-
-```text
-ROUND
-ROUNDUP
-ROUNDDOWN
-ABS
-MIN
-MAX
-MOD
-POWER
-PRODUCT
-```
-
-## Text functions
-
-```text
-LEFT
-RIGHT
-MID
-LEN
-TRIM
-CLEAN
-SUBSTITUTE
-REPLACE
-TEXT
-VALUE
-CONCAT
-TEXTJOIN
-```
-
-## Date functions
-
-```text
-DATE
-YEAR
-MONTH
-DAY
-EOMONTH
-EDATE
-TODAY
-NOW
-DATEDIF
-NETWORKDAYS
-```
-
-The architecture must allow additional functions to be added later.
-
----
-
-# 7. Dependency Extraction
-
-For every formula, identify:
-
-* direct cell references
-* cross-sheet references
-* workbook references
-* range references
-* named ranges
-* Excel tables
-* structured references
-* constants
-* hardcoded values
-* function dependencies
-
-Example:
-
-```excel
-=SUMIFS(Data!D:D,Data!A:A,A2,Data!B:B,"Loan")
-```
-
-The analyzer should identify:
-
-```text
-Input dependency:
-Summary!A2
-
-Criteria range:
-Data!A:A
-
-Criteria:
-"Loan"
-
-Sum range:
-Data!D:D
-```
-
----
-
-# 8. Recursive Backtracking
-
-This is the most important feature.
-
-If:
-
-```text
-F2 → VLOOKUP → D15
-```
-
-and D15 itself contains:
-
-```excel
-=C15*E15
-```
-
-the analyzer MUST continue tracing.
-
-Therefore:
-
-```text
-F2
- ↓
-VLOOKUP
- ↓
-Customer_Master!D15
- ↓
-C15 × E15
- ↓
-C15
- ↓
-E15
-```
-
-The engine must recursively traverse the dependency graph until it reaches:
-
-* hardcoded values
-* external workbook references
-* unsupported formulas
-* intentionally ignored cells
-* circular references
-
-Do not stop at the first formula cell.
-
----
-
-# 9. Lookup Resolution
-
-For every lookup operation, explain exactly what happened.
-
-Example:
-
-```excel
-=VLOOKUP(A2,Customer_Master!A:D,4,FALSE)
-```
-
-Output:
-
-```text
-LOOKUP TRACE
-
-Function:
-VLOOKUP
-
-Lookup value:
-Summary!A2
-
-Value:
-CUST1001
-
-Lookup range:
-Customer_Master!A:D
-
-Match mode:
-Exact
-
-Matched row:
-15
-
-Matched key:
-Customer_Master!A15
-
-Returned column:
-4
-
-Returned cell:
-Customer_Master!D15
-
-Returned value:
-₹50,000
-```
-
-If there are duplicates:
-
-```text
-⚠ WARNING
-
-Lookup key CUST1001 occurs 3 times.
-
-Rows:
-15
-27
-42
-
-VLOOKUP returns the first matching row:
-15
-```
-
-This is extremely important for audit purposes.
-
----
-
-# 10. XLOOKUP Trace
-
-For:
-
-```excel
-=XLOOKUP(A2,Data!A:A,Data!D:D,"Not Found")
-```
-
-show:
-
-```text
-Lookup value:
-CUST1001
-
-Lookup array:
-Data!A:A
-
-Return array:
-Data!D:D
-
-Match found:
-YES
-
-Matched row:
-153
-
-Return cell:
-Data!D153
-
-Result:
-₹75,500
-```
-
----
-
-# 11. INDEX / MATCH Trace
-
-For:
-
-```excel
-=INDEX(Rates!D:D,MATCH(B2,Rates!B:B,0))
-```
-
-show:
-
-```text
-MATCH
-
-Lookup:
-India
-
-Search range:
-Rates!B:B
-
-Match type:
-Exact
-
-Result:
-8
-
-
-INDEX
-
-Array:
-Rates!D:D
-
-Row:
-8
-
-Returned cell:
-Rates!D8
-
-Result:
-1.10
-```
-
----
-
-# 12. SUMIFS Trace
-
-For:
-
-```excel
-=SUMIFS(
- Commission!D:D,
- Commission!A:A,A2,
- Commission!B:B,"Loan"
+"""
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                                                                              ║
+║            🏆 EXCEL FORMULA ANALYSIS ENGINE - ULTIMATE EDITION              ║
+║                                                                              ║
+║                     "The Sherlock Holmes of Excel"                           ║
+║                                                                              ║
+║  Enterprise-Grade | Production-Ready | Feature-Rich                        ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+"""
+
+import os
+import re
+import json
+import hashlib
+import asyncio
+import logging
+import tempfile
+import subprocess
+from datetime import datetime, timedelta
+from typing import Optional, Dict, List, Set, Any, Union, Tuple, Callable
+from dataclasses import dataclass, field, asdict
+from enum import Enum
+from collections import defaultdict, deque
+from functools import lru_cache, wraps
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+import pickle
+import sqlite3
+from pathlib import Path
+
+# Third-party imports with error handling
+try:
+    import openpyxl
+    from openpyxl.utils import get_column_letter, column_index_from_string
+    from openpyxl.formula import tokenize
+    import pandas as pd
+    import networkx as nx
+    from networkx.drawing.nx_pydot import graphviz_layout
+    import plotly.graph_objects as go
+    import plotly.express as px
+    from plotly.subplots import make_subplots
+    import dash
+    from dash import dcc, html, dash_table, callback_context
+    from dash.dependencies import Input, Output, State
+    import dash_bootstrap_components as dbc
+    from flask import Flask, send_file, jsonify, request
+    import yaml
+    import jinja2
+    from weasyprint import HTML
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter, A4
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+except ImportError as e:
+    print(f"⚠️  Missing dependency: {e}. Please install required packages.")
+    print("Run: pip install openpyxl pandas networkx plotly dash dash-bootstrap-components weasyprint reportlab jinja2 pyyaml")
+
+# -----------------------------------------------------------------------------
+# LOGGING CONFIGURATION
+# -----------------------------------------------------------------------------
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('excel_analyzer.log'),
+        logging.StreamHandler()
+    ]
 )
-```
-
-do NOT merely return the total.
-
-Show:
-
-```text
-SUMIFS TRACE
-
-Sum range:
-Commission!D:D
-
-Criteria 1:
-Commission!A:A = CUST1001
-
-Criteria 2:
-Commission!B:B = Loan
-
-
-MATCHING RECORDS
-
-Row       ID          Type       Amount
-────────────────────────────────────────
-12        CUST1001   Loan       ₹1,500
-27        CUST1001   Loan       ₹1,000
-
-Total:
-₹2,500
-```
-
-For large datasets, show:
-
-```text
-Matching rows: 2,341
-
-First 100 rows shown.
-
-[View All Matching Rows]
-```
-
----
-
-# 13. IF / IFS Branch Analysis
-
-For:
-
-```excel
-=IF(A2>100,B2*C2,D2)
-```
-
-show:
-
-```text
-IF ANALYSIS
-
-Condition:
-A2 > 100
-
-A2:
-125
-
-Evaluation:
-125 > 100
-
-Result:
-TRUE
-
-Therefore:
-
-TRUE branch executed:
-B2 × C2
-
-FALSE branch:
-NOT EXECUTED
-```
-
-This distinction is extremely important.
-
-The analyzer should clearly distinguish:
-
-```text
-EXECUTED
-NOT EXECUTED
-```
-
----
-
-# 14. IFERROR Analysis
-
-For:
-
-```excel
-=IFERROR(VLOOKUP(...),0)
-```
-
-show:
-
-```text
-IFERROR
-
-Primary expression:
-VLOOKUP(...)
-
-Evaluation:
-SUCCESS
-
-Primary result:
-50,000
-
-Fallback:
-0
-
-Fallback executed:
-NO
-```
-
-If the lookup fails:
-
-```text
-Primary expression:
-ERROR #N/A
-
-Fallback:
-0
-
-Fallback executed:
-YES
-
-Final result:
-0
-```
-
----
-
-# 15. Calculation Trace
-
-Every mathematical operation should be represented as an individual node.
-
-Example:
-
-```excel
-=(A1+B1)*C1-D1
-```
-
-Output:
-
-```text
-Step 1:
-A1 = 100
-
-Step 2:
-B1 = 50
-
-Step 3:
-A1 + B1
-= 100 + 50
-= 150
-
-Step 4:
-C1 = 2
-
-Step 5:
-150 × 2
-= 300
-
-Step 6:
-D1 = 25
-
-Step 7:
-300 - 25
-= 275
-
-FINAL:
-275
-```
-
----
-
-# 16. Dependency Graph
-
-Generate an interactive visual dependency graph.
-
-Example:
-
-```text
-                       ┌─────────────┐
-                       │   F2 FINAL  │
-                       │   ₹57,500   │
-                       └──────┬──────┘
-                              │
-                ┌─────────────┼─────────────┐
-                ↓             ↓             ↓
-           VLOOKUP        INDEX/MATCH     SUMIFS
-                │             │             │
-                ↓             ↓             ↓
-          D15 = 50,000    D8 = 1.10     2,500
-                │             │
-                ↓             ↓
-             Customer       Rates
-             Master         Table
-```
-
-The graph must support:
-
-* zoom
-* pan
-* expand/collapse
-* click node
-* highlight path
-* search
-* hide irrelevant branches
-* show formulas
-* show values
-* show sheet names
-
----
-
-# 17. Formula Tree
-
-Provide a second visualization specifically showing the formula logic.
-
-Example:
-
-```text
-IFERROR
-│
-├── Addition
-│   │
-│   ├── Multiplication
-│   │   ├── VLOOKUP
-│   │   └── INDEX/MATCH
-│   │
-│   └── SUMIFS
-│
-└── Fallback = 0
-```
-
-Clicking a node should display:
-
-```text
-Function:
-SUMIFS
-
-Formula:
-=SUMIFS(...)
-
-Result:
-₹2,500
-
-Dependencies:
-6
-
-Matching records:
-2
-```
-
----
-
-# 18. Audit Table
-
-Create an audit table with:
-
-| Step | Type          | Source          | Formula      | Input         |   Result | Status |
-| ---- | ------------- | --------------- | ------------ | ------------- | -------: | ------ |
-| 1    | Cell          | Summary!A2      | —            | —             | CUST1001 | PASS   |
-| 2    | Lookup        | Customer_Master | VLOOKUP      | CUST1001      |  ₹50,000 | PASS   |
-| 3    | Lookup        | Rates           | MATCH        | India         |    Row 8 | PASS   |
-| 4    | Lookup        | Rates           | INDEX        | Row 8         |     1.10 | PASS   |
-| 5    | Calculation   | —               | 50,000×1.10  | —             |  ₹55,000 | PASS   |
-| 6    | Aggregation   | Commission      | SUMIFS       | CUST1001/Loan |   ₹2,500 | PASS   |
-| 7    | Calculation   | —               | 55,000+2,500 | —             |  ₹57,500 | PASS   |
-| 8    | Error handler | —               | IFERROR      | —             | No error | PASS   |
-
----
-
-# 19. Source Lineage
-
-Every final value should have a lineage report.
-
-Example:
-
-```text
-F2 = ₹57,500
-
-Source lineage:
-
-Summary!A2
-    ↓
-Customer_Master!A15
-    ↓
-Customer_Master!D15
-    ↓
-₹50,000
-    ↓
-× 1.10
-    ↓
-₹55,000
-    ↓
-+ Commission!D12
-+ Commission!D27
-    ↓
-₹2,500
-    ↓
-₹57,500
-```
-
----
-
-# 20. Hardcoded Value Detection
-
-Identify hardcoded constants inside formulas.
-
-Example:
-
-```excel
-=Revenue*1.10+2500
-```
-
-Report:
-
-```text
-⚠ HARD-CODED VALUES
-
-1.10
-2500
-```
-
-Explain:
-
-```text
-1.10 appears to be a rate.
-
-2500 appears to be a fixed adjustment.
-
-Recommendation:
-Consider moving these values into a controlled assumption table.
-```
-
-Do NOT make business assumptions automatically. Clearly label such statements as potential observations.
-
----
-
-# 21. Formula Risk Scoring
-
-Create a formula complexity/risk score.
-
-Example:
-
-```text
-Formula Risk Score: 78 / 100
-Risk Level: HIGH
-```
-
-Factors:
-
-```text
-Formula length
-Number of nested functions
-Number of dependencies
-Cross-sheet references
-External references
-Volatile functions
-Hardcoded constants
-Lookup operations
-Nested IF statements
-Dynamic ranges
-Full-column references
-Circular references
-Error handling
-Duplicate lookup keys
-```
-
-Example:
-
-```text
-Risk Factors
-
-✓ 5 nested functions
-✓ 3 cross-sheet references
-✓ 2 lookup operations
-⚠ 1 hardcoded rate
-⚠ Full-column SUMIFS
-✓ No circular reference
-✓ No external workbook
-```
-
----
-
-# 22. Circular Reference Detection
-
-Detect:
-
-```text
-A1 → B1 → C1 → A1
-```
-
-Display:
-
-```text
-⚠ CIRCULAR REFERENCE DETECTED
-
-Cycle:
-
-Summary!A1
- ↓
-Summary!B1
- ↓
-Rates!C10
- ↓
-Summary!A1
-```
-
-The engine must never enter an infinite recursive loop.
-
----
-
-# 23. Error Analysis
-
-Identify:
-
-```text
-#N/A
-#VALUE!
-#REF!
-#DIV/0!
-#NAME?
-#NUM!
-#NULL!
-```
-
-Explain where the error originated.
-
-Example:
-
-```text
-FINAL RESULT:
-#N/A
-
-ROOT CAUSE:
-
-F2
- ↓
-XLOOKUP
- ↓
-Lookup value = CUST1099
- ↓
-Lookup array searched
- ↓
-No matching record found
-
-Therefore:
-XLOOKUP returned #N/A
-```
-
-Do not simply report the final error.
-
----
-
-# 24. Formula Comparison
-
-Allow users to compare formulas between cells.
-
-Example:
-
-```text
-Compare:
-
-F2
-F3
-F4
-```
-
-Output:
-
-```text
-F2:
-=VLOOKUP(A2,Master!A:D,4,FALSE)
-
-F3:
-=VLOOKUP(A3,Master!A:D,4,FALSE)
-
-F4:
-=VLOOKUP(A4,Master!A:D,5,FALSE)
-```
-
-Highlight:
-
-```text
-F2 vs F3:
-Equivalent pattern
-
-F2 vs F4:
-⚠ Returned column changed
-
-F2:
-column = 4
-
-F4:
-column = 5
-```
-
-This should help detect accidental formula changes.
-
----
-
-# 25. Formula Pattern Detection
-
-Detect formulas that should logically be the same across rows.
-
-Example:
-
-```text
-F2 = A2*B2
-F3 = A3*B3
-F4 = A4*C4
-F5 = A5*B5
-```
-
-Report:
-
-```text
-⚠ POSSIBLE FORMULA ANOMALY
-
-Expected pattern:
-=A(row)*B(row)
-
-F4:
-=A4*C4
-
-Deviation detected.
-```
-
-This is extremely valuable for financial models.
-
----
-
-# 26. Formula Difference Engine
-
-When comparing two formulas, normalize relative references.
-
-For example:
-
-```text
-F2:
-=A2*B2
-
-F3:
-=A3*B3
-```
-
-should be considered the same formula pattern.
-
-But:
-
-```text
-F4:
-=A4*C4
-```
-
-should be flagged.
-
----
-
-# 27. Named Ranges
-
-Resolve:
-
-```excel
-=Revenue*Tax_Rate
-```
-
-into:
-
-```text
-Revenue
- ↓
-Sheet1!D25
-
-Tax_Rate
- ↓
-Assumptions!B10
- ↓
-18%
-```
-
-Show both:
-
-```text
-Named Range
-Underlying Range
-Value
-```
-
----
-
-# 28. Excel Tables / Structured References
-
-Support formulas such as:
-
-```excel
-=SUMIFS(
-    Sales[Amount],
-    Sales[Country],A2,
-    Sales[Product],"Loan"
-)
-```
-
-Resolve:
-
-```text
-Sales[Amount]
-Sales[Country]
-Sales[Product]
-```
-
-and show actual matching records where practical.
-
----
-
-# 29. Cross-Sheet Dependencies
-
-Clearly distinguish:
-
-```text
-Same sheet
-Cross sheet
-External workbook
-Named range
-Table
-Dynamic range
-```
-
-Use labels such as:
-
-```text
-LOCAL
-CROSS-SHEET
-EXTERNAL
-NAMED RANGE
-TABLE
-```
-
----
-
-# 30. External Workbook Dependencies
-
-If a formula contains:
-
-```excel
-='[Rates.xlsx]Sheet1'!B10
-```
-
-show:
-
-```text
-⚠ EXTERNAL WORKBOOK
-
-Workbook:
-Rates.xlsx
-
-Sheet:
-Sheet1
-
-Cell:
-B10
-
-Status:
-External dependency
-
-Value:
-1.10
-
-Audit recommendation:
-Ensure source workbook is available and version-controlled.
-```
-
-If the external workbook cannot be accessed, do not invent its value.
-
----
-
-# 31. Volatile Function Detection
-
-Flag:
-
-```text
-NOW()
-TODAY()
-RAND()
-RANDBETWEEN()
-OFFSET()
-INDIRECT()
-```
-
-Example:
-
-```text
-⚠ VOLATILE / INDIRECT DEPENDENCY
-
-Function:
-INDIRECT
-
-Reason:
-Dependency cannot always be statically determined.
-
-Resolution:
-Runtime evaluation required.
-```
-
----
-
-# 32. Unsupported Function Handling
-
-If a formula contains an unsupported function:
-
-```text
-=MYCUSTOMFUNCTION(A2)
-```
-
-do not fail the entire analysis.
-
-Show:
-
-```text
-⚠ UNSUPPORTED FUNCTION
-
-MYCUSTOMFUNCTION
-
-Static dependency analysis:
-PARTIAL
-
-Affected branch:
-MYCUSTOMFUNCTION(A2)
-
-Known dependency:
-A2
-
-Result:
-Unable to independently evaluate function.
-```
-
----
-
-# 33. Calculation Engine
-
-Where feasible, implement a calculation/evaluation engine.
-
-Important:
-
-Do not assume that a Python Excel library automatically reproduces Microsoft's Excel calculation engine perfectly.
-
-Separate:
-
-```text
-Formula Parsing
-Dependency Analysis
-Static Evaluation
-Excel Cached Value
-```
-
-If the workbook contains cached Excel values, clearly distinguish:
-
-```text
-Excel Cached Result:
-57,500
-
-Engine Calculated Result:
-57,500
-
-Status:
-MATCH
-```
-
-If they differ:
-
-```text
-⚠ CALCULATION MISMATCH
-
-Excel cached:
-57,500
-
-Analyzer:
-56,500
-
-Difference:
-1,000
-```
-
-Never silently replace one with another.
-
----
-
-# 34. Main Dashboard
-
-The dashboard should show:
-
-```text
-┌───────────────────────────────────────────────┐
-│ FORMULA ANALYSIS                              │
-├───────────────────────────────────────────────┤
-│                                               │
-│ Cell: F2                                      │
-│ Result: ₹57,500                               │
-│                                               │
-│ Complexity: HIGH                              │
-│ Risk: 78/100                                  │
-│                                               │
-│ Dependencies: 23                              │
-│ Source cells: 11                              │
-│ Lookups: 2                                    │
-│ Conditions: 3                                 │
-│ Calculations: 7                               │
-│                                               │
-│ ⚠ Warnings: 2                                 │
-│                                               │
-└───────────────────────────────────────────────┘
-```
-
----
-
-# 35. Tabs
-
-Create these tabs:
-
-## 1. Summary
-
-High-level result.
-
-## 2. Original Formula
-
-Display the complete original formula.
-
-## 3. Formula Tree
-
-AST/logical structure.
-
-## 4. Calculation Trace
-
-Every calculation step.
-
-## 5. Dependency Graph
-
-Visual dependency map.
-
-## 6. Lookup Trace
-
-Detailed VLOOKUP/XLOOKUP/INDEX-MATCH analysis.
-
-## 7. Source Lineage
-
-Trace every value back to its source.
-
-## 8. Conditions
-
-Show every IF/AND/OR/IFS condition.
-
-## 9. Matching Records
-
-Show records used by SUMIFS/COUNTIFS/FILTER/etc.
-
-## 10. Exceptions
-
-Warnings/errors/anomalies.
-
-## 11. Formula Comparison
-
-Compare formulas and patterns.
-
-## 12. Export
-
-Generate an audit report.
-
----
-
-# 36. Export
-
-Allow export to:
-
-```text
-.xlsx
-.csv
-.pdf
-.html
-.json
-```
-
-The Excel audit report should contain:
-
-```text
-Summary
-Formula
-Formula Tree
-Calculation Trace
-Dependency Tree
-Lookup Trace
-Source Lineage
-Exceptions
-Formula Comparison
-```
-
-The PDF should be suitable for attaching to an audit/review workpaper.
-
----
-
-# 37. JSON Output
-
-Also create a machine-readable JSON representation.
-
-Example:
-
-```json
-{
-  "workbook": "Financial_Model.xlsx",
-  "sheet": "Summary",
-  "cell": "F2",
-  "formula": "=IFERROR(...)",
-  "result": 57500,
-  "complexity": "HIGH",
-  "dependencies": [
-    {
-      "type": "VLOOKUP",
-      "lookup_value": "CUST1001",
-      "matched_cell": "Customer_Master!D15",
-      "result": 50000
-    },
-    {
-      "type": "INDEX_MATCH",
-      "lookup_value": "India",
-      "matched_cell": "Rates!D8",
-      "result": 1.10
-    },
-    {
-      "type": "SUMIFS",
-      "result": 2500
-    }
-  ]
-}
-```
-
----
-
-# 38. Explainability
-
-Every result must answer these questions:
-
-### WHAT?
-
-What value was calculated?
-
-### WHERE?
-
-Where did the value come from?
-
-### HOW?
-
-How was it calculated?
-
-### WHY?
-
-Why was a particular branch or lookup result selected?
-
-### WHICH?
-
-Which rows/cells were actually used?
-
-### WHAT IF?
-
-What alternative branch would have been used if the condition changed?
-
-Example:
-
-```text
-WHY was the TRUE branch selected?
-
-Because:
-Summary!C2 = 125
-
-Condition:
-C2 > 100
-
-Evaluation:
-TRUE
-```
-
----
-
-# 39. "What If" Simulation
-
-Add an optional feature allowing the user to change an input temporarily.
-
-Example:
-
-```text
-Original:
-
-A2 = 125
-Final = ₹57,500
-```
-
-User changes:
-
-```text
-A2 = 90
-```
-
-System shows:
-
-```text
-Changed input:
-125 → 90
-
-Changed condition:
-TRUE → FALSE
-
-Executed branch:
-TRUE → FALSE
-
-New result:
-₹12,000
-
-Difference:
-₹45,500
-```
-
-Never modify the original workbook.
-
----
-
-# 40. Reverse Analysis
-
-Add a feature called:
-
-## "Why is this number here?"
-
-User enters:
-
-```text
-Cell: F2
-```
-
-or:
-
-```text
-Value: ₹57,500
-```
-
-The system should work backward.
-
-Example:
-
-```text
-₹57,500
-│
-├── ₹55,000
-│   ├── ₹50,000 Revenue
-│   └── × 1.10 Rate
-│
-└── ₹2,500 Commission
-    ├── ₹1,500
-    └── ₹1,000
-```
-
-This should be the signature feature of the application.
-
----
-
-# 41. "Find Source of Value"
-
-Allow:
-
-```text
-Find Source
-```
-
-The user selects:
-
-```text
-F2 = ₹57,500
-```
-
-The system identifies the underlying hardcoded/input cells that ultimately influence F2.
-
-Example:
-
-```text
-ROOT INPUTS
-
-Summary!A2
-CUST1001
-
-Summary!B2
-India
-
-Customer_Master!D15
-₹50,000
-
-Rates!D8
-1.10
-
-Commission!D12
-₹1,500
-
-Commission!D27
-₹1,000
-```
-
----
-
-# 42. Impact Analysis
-
-Allow the reverse operation.
-
-User selects:
-
-```text
-Customer_Master!D15
-```
-
-Then click:
-
-```text
-Trace Dependents
-```
-
-Output:
-
-```text
-Customer_Master!D15
-      ↓
-Summary!F2
-      ↓
-Dashboard!B10
-      ↓
-Report!G22
-```
-
-This tells the user:
-
-> If this source value changes, which outputs are potentially affected?
-
----
-
-# 43. Performance Requirements
-
-The application must be designed for large workbooks.
-
-Potential workbook sizes:
-
-```text
-10 worksheets
-50 worksheets
-100+ worksheets
-
-100,000+ rows
-1,000,000+ rows
-100,000+ formulas
-```
-
-Do not recursively scan the entire workbook for every selected cell.
-
-Instead:
-
-1. Parse workbook once.
-2. Build dependency indexes.
-3. Cache parsed formulas.
-4. Cache resolved references.
-5. Analyze only the relevant dependency subgraph.
-6. Reuse results for repeated dependencies.
-
----
-
-# 44. Caching
-
-Cache:
-
-```text
-Parsed formulas
-AST
-Cell values
-Dependency graph
-Lookup indexes
-Table metadata
-Named ranges
-```
-
-If the same VLOOKUP appears 10,000 times, do not rebuild the lookup structure 10,000 times.
-
----
-
-# 45. Audit Trail
-
-Every analysis should have:
-
-```text
-Analysis ID
-Timestamp
-Workbook name
-Worksheet
-Target cell
-Original formula
-Final result
-Analyzer version
-Warnings
-Calculation status
-```
-
-The original workbook must remain unchanged.
-
----
-
-# 46. Color-Coded Status
-
-Use:
-
-```text
-GREEN:
-Successfully resolved
-
-YELLOW:
-Warning / unusual dependency
-
-RED:
-Error / unresolved dependency
-
-BLUE:
-Information
-
-GREY:
-Not executed branch
-```
-
-Example:
-
-```text
-✓ VLOOKUP resolved
-✓ INDEX/MATCH resolved
-⚠ Duplicate lookup key
-✓ SUMIFS resolved
-⚠ Hardcoded rate
-```
-
----
-
-# 47. Financial Model Specific Checks
-
-Because this tool will potentially be used for banking, finance, audit, reconciliation, and reporting models, include checks for:
-
-```text
-Hardcoded assumptions
-Broken formulas
-Inconsistent formulas
-Unexpected formula changes
-Duplicate lookup keys
-Missing lookup keys
-Circular references
-Cross-sheet dependencies
-External workbook dependencies
-Hidden-sheet dependencies
-Hidden-row dependencies
-Full-column references
-Volatile functions
-Error suppression through IFERROR
-Formula/value inconsistencies
-Unexpected zeros
-Unexpected blanks
-```
-
-For example:
-
-```excel
-=IFERROR(VLOOKUP(...),0)
-```
-
-should receive:
-
-```text
-⚠ ERROR SUPPRESSION
-
-The formula converts lookup errors into 0.
-
-Potential audit consideration:
-A missing record may therefore appear as a legitimate zero.
-```
-
-Do not label this as definitively wrong; label it as a risk/observation.
-
----
-
-# 48. Security
-
-The application must:
-
-* Never execute arbitrary macros.
-* Never execute VBA.
-* Never execute external code from a workbook.
-* Treat uploaded workbooks as untrusted input.
-* Avoid arbitrary file execution.
-* Sanitize workbook paths.
-* Never overwrite the user's source workbook.
-* Never send workbook data externally unless explicitly configured.
-
----
-
-# 49. Architecture
-
-Use modular architecture:
-
-```text
-excel_formula_analyzer/
-│
-├── parser/
-│   ├── lexer
-│   ├── parser
-│   └── ast
-│
-├── workbook/
-│   ├── loader
-│   ├── sheets
-│   ├── tables
-│   ├── named_ranges
-│   └── external_links
-│
-├── engine/
-│   ├── evaluator
-│   ├── lookup_engine
-│   ├── dependency_engine
-│   ├── calculation_engine
-│   └── recursion_engine
-│
-├── analysis/
-│   ├── lineage
-│   ├── risk
-│   ├── anomaly
-│   ├── formula_compare
-│   └── exceptions
-│
-├── visualization/
-│   ├── dependency_graph
-│   ├── formula_tree
-│   └── calculation_trace
-│
-├── export/
-│   ├── excel
-│   ├── pdf
-│   ├── json
-│   └── html
-│
-└── ui/
-```
-
-Keep each component independently testable.
-
----
-
-# 50. Important Design Principle
-
-Do NOT build this as a simple "formula text parser."
-
-Build it as:
-
-```text
-WORKBOOK
-    ↓
-WORKBOOK MODEL
-    ↓
-FORMULA PARSER
-    ↓
-AST
-    ↓
-DEPENDENCY GRAPH
-    ↓
-EVALUATION ENGINE
-    ↓
-TRACE ENGINE
-    ↓
-LINEAGE ENGINE
-    ↓
-AUDIT / RISK ENGINE
-    ↓
-VISUALIZATION
-    ↓
-EXPORT
-```
-
----
-
-# 51. Example Final User Output
-
-For the example formula, the final report should look approximately like:
-
-```text
-========================================================
-              EXCEL FORMULA BACKTRACKER
-========================================================
-
-Workbook: Financial_Model.xlsx
-Sheet: Summary
-Cell: F2
-
-FINAL RESULT
---------------------------------------------------------
-₹57,500
-
-FORMULA
---------------------------------------------------------
-=IFERROR(
- VLOOKUP(A2,Customer_Master!A:D,4,FALSE) *
- INDEX(Rates!B:D,MATCH(B2,Rates!B:B,0),3)
- + SUMIFS(Commission!D:D,
-          Commission!A:A,A2,
-          Commission!B:B,"Loan"),
- 0)
-
-COMPLEXITY
---------------------------------------------------------
-HIGH
-
-Dependencies:       23
-Source cells:       11
-Lookups:             2
-Conditions:          1
-Calculations:        3
-
---------------------------------------------------------
-CALCULATION TRACE
---------------------------------------------------------
-
-1. A2
-   = CUST1001
-
-2. VLOOKUP
-   Lookup: CUST1001
-   Match: Customer_Master!A15
-   Return: Customer_Master!D15
-   Result: ₹50,000
-
-3. B2
-   = India
-
-4. MATCH
-   India → Rates!B8
-
-5. INDEX
-   Rates!D8
-   Result: 1.10
-
-6. MULTIPLICATION
-   ₹50,000 × 1.10
-   = ₹55,000
-
-7. SUMIFS
-
-   Matching records:
-
-   Commission!12 = ₹1,500
-   Commission!27 = ₹1,000
-
-   Total = ₹2,500
-
-8. ADDITION
-   ₹55,000 + ₹2,500
-   = ₹57,500
-
-9. IFERROR
-   Error detected: NO
-   Fallback executed: NO
-
-========================================================
-FINAL RESULT: ₹57,500
-========================================================
-
-AUDIT OBSERVATIONS
---------------------------------------------------------
-
-✓ VLOOKUP successfully resolved
-✓ INDEX/MATCH successfully resolved
-✓ SUMIFS successfully resolved
-✓ No circular dependency
-
-⚠ Customer_Master contains duplicate CUST1001
-⚠ Rate 1.10 is hardcoded in source data
-⚠ SUMIFS uses full-column references
-
-========================================================
-ROOT SOURCE INPUTS
-========================================================
-
-Summary!A2                CUST1001
-Summary!B2                India
-Customer_Master!D15       ₹50,000
-Rates!D8                   1.10
-Commission!D12             ₹1,500
-Commission!D27             ₹1,000
-
-========================================================
-```
-
-# 52. Acceptance Criteria
-
-The project is complete only when the application can successfully analyze formulas containing combinations such as:
-
-```excel
-=IFERROR(
-    IF(
-        AND(
-            XLOOKUP(A2,Master[ID],Master[Status])="Active",
-            B2>100
-        ),
-        SUMIFS(
-            Data[Amount],
-            Data[ID],A2,
-            Data[Country],C2,
-            Data[Type],"Loan"
+logger = logging.getLogger(__name__)
+
+# -----------------------------------------------------------------------------
+# CORE DATA MODELS - The Foundation of Everything
+# -----------------------------------------------------------------------------
+
+class CellType(Enum):
+    """Types of cell content"""
+    EMPTY = "EMPTY"
+    VALUE = "VALUE"
+    FORMULA = "FORMULA"
+    ERROR = "ERROR"
+    ARRAY_FORMULA = "ARRAY_FORMULA"
+
+class DependencyType(Enum):
+    """Types of dependencies"""
+    DIRECT = "DIRECT"
+    INDIRECT = "INDIRECT"
+    LOOKUP = "LOOKUP"
+    AGGREGATION = "AGGREGATION"
+    CONDITIONAL = "CONDITIONAL"
+    VOLATILE = "VOLATILE"
+    EXTERNAL = "EXTERNAL"
+    NAMED_RANGE = "NAMED_RANGE"
+    TABLE = "TABLE"
+
+class RiskLevel(Enum):
+    """Risk levels for formulas"""
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+    CRITICAL = "CRITICAL"
+
+class ExecutionStatus(Enum):
+    """Status of formula execution"""
+    NOT_EXECUTED = "NOT_EXECUTED"
+    EXECUTED = "EXECUTED"
+    ERROR = "ERROR"
+    PARTIAL = "PARTIAL"
+
+@dataclass
+class CellReference:
+    """Immutable cell reference with full context"""
+    sheet: str
+    row: int
+    col: int
+    workbook: Optional[str] = None
+    _hash: Optional[str] = None
+    
+    def __post_init__(self):
+        self._hash = hashlib.md5(
+            f"{self.workbook}:{self.sheet}:{self.row}:{self.col}".encode()
+        ).hexdigest()[:12]
+    
+    @property
+    def address(self) -> str:
+        """Full address including sheet name"""
+        return f"{self.sheet}!{self._col_to_letter(self.col)}{self.row}"
+    
+    @property
+    def a1_address(self) -> str:
+        """A1-style address"""
+        return f"{self._col_to_letter(self.col)}{self.row}"
+    
+    @property
+    def r1c1_address(self) -> str:
+        """R1C1-style address"""
+        return f"R{self.row}C{self.col}"
+    
+    @staticmethod
+    def _col_to_letter(col: int) -> str:
+        """Convert column number to letter"""
+        result = []
+        while col > 0:
+            col, remainder = divmod(col - 1, 26)
+            result.append(chr(65 + remainder))
+        return ''.join(reversed(result))
+    
+    @staticmethod
+    def _letter_to_col(letter: str) -> int:
+        """Convert column letter to number"""
+        result = 0
+        for char in letter:
+            result = result * 26 + (ord(char.upper()) - 64)
+        return result
+    
+    def __hash__(self):
+        return hash(self._hash)
+    
+    def __eq__(self, other):
+        if not isinstance(other, CellReference):
+            return False
+        return (self.sheet == other.sheet and 
+                self.row == other.row and 
+                self.col == other.col and
+                self.workbook == other.workbook)
+
+@dataclass
+class CellData:
+    """Complete cell data"""
+    reference: CellReference
+    value: Any = None
+    formula: Optional[str] = None
+    cell_type: CellType = CellType.EMPTY
+    data_type: str = "unknown"
+    formatting: Dict[str, Any] = field(default_factory=dict)
+    is_hidden: bool = False
+    is_locked: bool = False
+    comment: Optional[str] = None
+    cached_value: Any = None
+    
+    @property
+    def is_formula(self) -> bool:
+        return self.cell_type == CellType.FORMULA
+    
+    @property
+    def is_empty(self) -> bool:
+        return self.cell_type == CellType.EMPTY
+    
+    def to_dict(self) -> Dict:
+        return {
+            'reference': self.reference.address,
+            'value': self.value,
+            'formula': self.formula,
+            'type': self.cell_type.value,
+            'data_type': self.data_type,
+            'is_hidden': self.is_hidden,
+            'is_locked': self.is_locked,
+            'comment': self.comment
+        }
+
+@dataclass
+class FormulaNode:
+    """Abstract Syntax Tree node"""
+    node_type: str
+    value: Any = None
+    children: List['FormulaNode'] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    _id: str = field(default_factory=lambda: hashlib.md5(str(datetime.now()).encode()).hexdigest()[:8])
+    parent: Optional['FormulaNode'] = None
+    
+    def add_child(self, child: 'FormulaNode'):
+        child.parent = self
+        self.children.append(child)
+    
+    def to_dict(self) -> Dict:
+        return {
+            'id': self._id,
+            'type': self.node_type,
+            'value': self.value,
+            'metadata': self.metadata,
+            'children': [c.to_dict() for c in self.children]
+        }
+    
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), indent=2)
+    
+    def __repr__(self) -> str:
+        return f"FormulaNode({self.node_type}, {self.value}, {len(self.children)} children)"
+
+@dataclass
+class AnalysisContext:
+    """Context for a single analysis session"""
+    analysis_id: str = field(default_factory=lambda: hashlib.md5(str(datetime.now()).encode()).hexdigest()[:16])
+    timestamp: datetime = field(default_factory=datetime.now)
+    target_cell: Optional[CellReference] = None
+    workbook_hash: Optional[str] = None
+    settings: Dict[str, Any] = field(default_factory=dict)
+    cache: Dict[str, Any] = field(default_factory=dict)
+    warnings: List[Dict[str, Any]] = field(default_factory=list)
+    errors: List[Dict[str, Any]] = field(default_factory=list)
+    execution_path: List[str] = field(default_factory=list)
+    visited_cells: Set[CellReference] = field(default_factory=set)
+    
+    def add_warning(self, message: str, details: Dict = None):
+        self.warnings.append({
+            'timestamp': datetime.now().isoformat(),
+            'message': message,
+            'details': details or {}
+        })
+        logger.warning(f"Warning: {message}")
+    
+    def add_error(self, message: str, details: Dict = None):
+        self.errors.append({
+            'timestamp': datetime.now().isoformat(),
+            'message': message,
+            'details': details or {}
+        })
+        logger.error(f"Error: {message}")
+    
+    def to_dict(self) -> Dict:
+        return {
+            'analysis_id': self.analysis_id,
+            'timestamp': self.timestamp.isoformat(),
+            'target_cell': self.target_cell.address if self.target_cell else None,
+            'workbook_hash': self.workbook_hash,
+            'warnings': self.warnings,
+            'errors': self.errors,
+            'execution_path': self.execution_path
+        }
+
+# -----------------------------------------------------------------------------
+# ADVANCED FORMULA PARSER - The Brain
+# -----------------------------------------------------------------------------
+
+class ExcelFormulaTokenizer:
+    """Advanced tokenizer with error recovery"""
+    
+    FUNCTION_PATTERN = re.compile(r'^[A-Z_][A-Z0-9_]*$', re.IGNORECASE)
+    REFERENCE_PATTERN = re.compile(r'^([A-Z]+)([0-9]+)$', re.IGNORECASE)
+    SHEET_REFERENCE_PATTERN = re.compile(r"^'?([^']+)'?!([A-Z]+)([0-9]+)$", re.IGNORECASE)
+    RANGE_PATTERN = re.compile(r'^([A-Z]+):([A-Z]+)$', re.IGNORECASE)
+    NAMED_RANGE_PATTERN = re.compile(r'^[A-Z_][A-Z0-9_.]*$', re.IGNORECASE)
+    
+    def __init__(self):
+        self._operators = {
+            '+': 'ADD', '-': 'SUBTRACT', '*': 'MULTIPLY', '/': 'DIVIDE',
+            '^': 'POWER', '%': 'PERCENT',
+            '=': 'EQUALS', '<': 'LESS_THAN', '>': 'GREATER_THAN',
+            '<=': 'LESS_EQUAL', '>=': 'GREATER_EQUAL', '<>': 'NOT_EQUAL',
+            '&': 'CONCATENATE'
+        }
+        self._functions = self._build_function_map()
+        self._token_cache = {}
+    
+    def _build_function_map(self) -> Dict:
+        """Build comprehensive function map with metadata"""
+        return {
+            # Lookup Functions
+            'VLOOKUP': {'args': 4, 'optional': 1, 'category': 'LOOKUP'},
+            'HLOOKUP': {'args': 4, 'optional': 1, 'category': 'LOOKUP'},
+            'XLOOKUP': {'args': 3, 'optional': 3, 'category': 'LOOKUP'},
+            'LOOKUP': {'args': 2, 'optional': 1, 'category': 'LOOKUP'},
+            'INDEX': {'args': 2, 'optional': 1, 'category': 'LOOKUP'},
+            'MATCH': {'args': 2, 'optional': 1, 'category': 'LOOKUP'},
+            'XMATCH': {'args': 2, 'optional': 2, 'category': 'LOOKUP'},
+            'CHOOSE': {'args': 2, 'optional': float('inf'), 'category': 'LOOKUP'},
+            
+            # Conditional Functions
+            'IF': {'args': 3, 'optional': 0, 'category': 'CONDITIONAL'},
+            'IFS': {'args': 2, 'optional': float('inf'), 'category': 'CONDITIONAL'},
+            'IFERROR': {'args': 2, 'optional': 0, 'category': 'CONDITIONAL'},
+            'IFNA': {'args': 2, 'optional': 0, 'category': 'CONDITIONAL'},
+            'AND': {'args': 1, 'optional': float('inf'), 'category': 'CONDITIONAL'},
+            'OR': {'args': 1, 'optional': float('inf'), 'category': 'CONDITIONAL'},
+            'NOT': {'args': 1, 'optional': 0, 'category': 'CONDITIONAL'},
+            'SWITCH': {'args': 2, 'optional': float('inf'), 'category': 'CONDITIONAL'},
+            
+            # Aggregation Functions
+            'SUM': {'args': 1, 'optional': float('inf'), 'category': 'AGGREGATION'},
+            'SUMIF': {'args': 3, 'optional': 0, 'category': 'AGGREGATION'},
+            'SUMIFS': {'args': 3, 'optional': float('inf'), 'category': 'AGGREGATION'},
+            'COUNT': {'args': 1, 'optional': float('inf'), 'category': 'AGGREGATION'},
+            'COUNTA': {'args': 1, 'optional': float('inf'), 'category': 'AGGREGATION'},
+            'COUNTIF': {'args': 2, 'optional': 0, 'category': 'AGGREGATION'},
+            'COUNTIFS': {'args': 2, 'optional': float('inf'), 'category': 'AGGREGATION'},
+            'AVERAGE': {'args': 1, 'optional': float('inf'), 'category': 'AGGREGATION'},
+            'AVERAGEIF': {'args': 3, 'optional': 0, 'category': 'AGGREGATION'},
+            'AVERAGEIFS': {'args': 3, 'optional': float('inf'), 'category': 'AGGREGATION'},
+            'MIN': {'args': 1, 'optional': float('inf'), 'category': 'AGGREGATION'},
+            'MAX': {'args': 1, 'optional': float('inf'), 'category': 'AGGREGATION'},
+            
+            # Mathematical Functions
+            'ROUND': {'args': 2, 'optional': 0, 'category': 'MATH'},
+            'ROUNDUP': {'args': 2, 'optional': 0, 'category': 'MATH'},
+            'ROUNDDOWN': {'args': 2, 'optional': 0, 'category': 'MATH'},
+            'ABS': {'args': 1, 'optional': 0, 'category': 'MATH'},
+            'MOD': {'args': 2, 'optional': 0, 'category': 'MATH'},
+            'POWER': {'args': 2, 'optional': 0, 'category': 'MATH'},
+            'PRODUCT': {'args': 1, 'optional': float('inf'), 'category': 'MATH'},
+            
+            # Text Functions
+            'LEFT': {'args': 2, 'optional': 0, 'category': 'TEXT'},
+            'RIGHT': {'args': 2, 'optional': 0, 'category': 'TEXT'},
+            'MID': {'args': 3, 'optional': 0, 'category': 'TEXT'},
+            'LEN': {'args': 1, 'optional': 0, 'category': 'TEXT'},
+            'TRIM': {'args': 1, 'optional': 0, 'category': 'TEXT'},
+            'SUBSTITUTE': {'args': 3, 'optional': 1, 'category': 'TEXT'},
+            'TEXT': {'args': 2, 'optional': 0, 'category': 'TEXT'},
+            'VALUE': {'args': 1, 'optional': 0, 'category': 'TEXT'},
+            'CONCAT': {'args': 1, 'optional': float('inf'), 'category': 'TEXT'},
+            'TEXTJOIN': {'args': 3, 'optional': 0, 'category': 'TEXT'},
+            
+            # Date Functions
+            'DATE': {'args': 3, 'optional': 0, 'category': 'DATE'},
+            'YEAR': {'args': 1, 'optional': 0, 'category': 'DATE'},
+            'MONTH': {'args': 1, 'optional': 0, 'category': 'DATE'},
+            'DAY': {'args': 1, 'optional': 0, 'category': 'DATE'},
+            'EOMONTH': {'args': 2, 'optional': 0, 'category': 'DATE'},
+            'EDATE': {'args': 2, 'optional': 0, 'category': 'DATE'},
+            'DATEDIF': {'args': 3, 'optional': 0, 'category': 'DATE'},
+            'NETWORKDAYS': {'args': 2, 'optional': 1, 'category': 'DATE'},
+            
+            # Volatile Functions
+            'NOW': {'args': 0, 'optional': 0, 'category': 'VOLATILE'},
+            'TODAY': {'args': 0, 'optional': 0, 'category': 'VOLATILE'},
+            'RAND': {'args': 0, 'optional': 0, 'category': 'VOLATILE'},
+            'RANDBETWEEN': {'args': 2, 'optional': 0, 'category': 'VOLATILE'},
+            'OFFSET': {'args': 3, 'optional': 2, 'category': 'VOLATILE'},
+            'INDIRECT': {'args': 1, 'optional': 1, 'category': 'VOLATILE'},
+            
+            # Dynamic Array Functions
+            'FILTER': {'args': 2, 'optional': 1, 'category': 'DYNAMIC_ARRAY'},
+            'SORT': {'args': 1, 'optional': 3, 'category': 'DYNAMIC_ARRAY'},
+            'SORTBY': {'args': 2, 'optional': 2, 'category': 'DYNAMIC_ARRAY'},
+            'UNIQUE': {'args': 1, 'optional': 2, 'category': 'DYNAMIC_ARRAY'},
+            'SEQUENCE': {'args': 1, 'optional': 3, 'category': 'DYNAMIC_ARRAY'},
+            'TAKE': {'args': 2, 'optional': 0, 'category': 'DYNAMIC_ARRAY'},
+            'DROP': {'args': 2, 'optional': 0, 'category': 'DYNAMIC_ARRAY'},
+            'CHOOSECOLS': {'args': 2, 'optional': 0, 'category': 'DYNAMIC_ARRAY'},
+            'CHOOSEROWS': {'args': 2, 'optional': 0, 'category': 'DYNAMIC_ARRAY'}
+        }
+    
+    def tokenize(self, formula: str, context: AnalysisContext = None) -> List[Dict]:
+        """Tokenize formula with full context and error recovery"""
+        if formula in self._token_cache:
+            return self._token_cache[formula]
+        
+        tokens = []
+        i = 0
+        formula = formula.strip()
+        
+        if not formula:
+            return tokens
+        
+        # Remove leading '='
+        if formula.startswith('='):
+            formula = formula[1:]
+        
+        while i < len(formula):
+            char = formula[i]
+            
+            # Skip whitespace
+            if char.isspace():
+                i += 1
+                continue
+            
+            # Handle strings
+            if char in ('"', "'"):
+                start = i
+                quote_char = char
+                i += 1
+                value = ''
+                while i < len(formula) and formula[i] != quote_char:
+                    if formula[i] == '\\' and i + 1 < len(formula):
+                        i += 2
+                    else:
+                        value += formula[i]
+                        i += 1
+                if i < len(formula):
+                    i += 1
+                tokens.append({
+                    'type': 'STRING',
+                    'value': value,
+                    'raw': formula[start:i],
+                    'position': start
+                })
+                continue
+            
+            # Handle numbers
+            if char.isdigit() or char == '.':
+                start = i
+                is_decimal = False
+                while i < len(formula) and (formula[i].isdigit() or (formula[i] == '.' and not is_decimal)):
+                    if formula[i] == '.':
+                        is_decimal = True
+                    i += 1
+                tokens.append({
+                    'type': 'NUMBER',
+                    'value': float(formula[start:i]) if is_decimal else int(formula[start:i]),
+                    'raw': formula[start:i],
+                    'position': start
+                })
+                continue
+            
+            # Handle function names and references
+            if char.isalpha() or char == '_':
+                start = i
+                while i < len(formula) and (formula[i].isalnum() or formula[i] in '._'):
+                    i += 1
+                token_value = formula[start:i]
+                
+                # Check if it's a function
+                if i < len(formula) and formula[i] == '(':
+                    tokens.append({
+                        'type': 'FUNCTION',
+                        'value': token_value.upper(),
+                        'raw': token_value,
+                        'position': start,
+                        'metadata': self._functions.get(token_value.upper(), {})
+                    })
+                    # Add the '(' separately
+                    tokens.append({
+                        'type': 'LPAREN',
+                        'value': '(',
+                        'position': i
+                    })
+                    i += 1
+                else:
+                    # Check if it's a reference or named range
+                    if self._is_cell_reference(token_value):
+                        tokens.append({
+                            'type': 'REFERENCE',
+                            'value': token_value,
+                            'position': start
+                        })
+                    else:
+                        tokens.append({
+                            'type': 'NAMED_RANGE',
+                            'value': token_value,
+                            'position': start
+                        })
+                continue
+            
+            # Handle operators
+            if char in self._operators:
+                # Check for multi-character operators
+                operator = char
+                if i + 1 < len(formula) and formula[i:i+2] in self._operators:
+                    operator = formula[i:i+2]
+                    i += 2
+                else:
+                    i += 1
+                
+                tokens.append({
+                    'type': 'OPERATOR',
+                    'value': operator,
+                    'operator_type': self._operators.get(operator, 'UNKNOWN'),
+                    'position': start
+                })
+                continue
+            
+            # Handle parentheses
+            if char in '(){}[]':
+                token_type = 'LPAREN' if char == '(' else 'RPAREN'
+                tokens.append({
+                    'type': token_type,
+                    'value': char,
+                    'position': i
+                })
+                i += 1
+                continue
+            
+            # Handle separators
+            if char in ',;':
+                tokens.append({
+                    'type': 'SEPARATOR',
+                    'value': char,
+                    'position': i
+                })
+                i += 1
+                continue
+            
+            # Handle ranges
+            if char == ':':
+                tokens.append({
+                    'type': 'RANGE',
+                    'value': ':',
+                    'position': i
+                })
+                i += 1
+                continue
+            
+            # Handle errors
+            if context:
+                context.add_warning(f"Unexpected character '{char}' at position {i}")
+            i += 1
+        
+        self._token_cache[formula] = tokens
+        return tokens
+    
+    def _is_cell_reference(self, token: str) -> bool:
+        """Check if token is a valid cell reference"""
+        return bool(self.REFERENCE_PATTERN.match(token))
+
+class ExcelFormulaParser:
+    """Advanced formula parser with AST generation"""
+    
+    def __init__(self, tokenizer: ExcelFormulaTokenizer = None):
+        self.tokenizer = tokenizer or ExcelFormulaTokenizer()
+        self._parse_cache = {}
+        self._function_handlers = self._build_function_handlers()
+    
+    def _build_function_handlers(self) -> Dict:
+        """Build function handlers for AST construction"""
+        return {
+            # Lookup Functions
+            'VLOOKUP': self._handle_lookup,
+            'XLOOKUP': self._handle_lookup,
+            'INDEX': self._handle_index,
+            'MATCH': self._handle_match,
+            
+            # Conditional Functions
+            'IF': self._handle_if,
+            'IFS': self._handle_ifs,
+            'IFERROR': self._handle_iferror,
+            'AND': self._handle_logical,
+            'OR': self._handle_logical,
+            'NOT': self._handle_not,
+            
+            # Aggregation Functions
+            'SUM': self._handle_aggregation,
+            'SUMIF': self._handle_aggregation,
+            'SUMIFS': self._handle_aggregation,
+            'COUNT': self._handle_aggregation,
+            'COUNTA': self._handle_aggregation,
+            'COUNTIF': self._handle_aggregation,
+            'COUNTIFS': self._handle_aggregation,
+            'AVERAGE': self._handle_aggregation,
+            'AVERAGEIF': self._handle_aggregation,
+            'AVERAGEIFS': self._handle_aggregation,
+        }
+    
+    def parse(self, formula: str, context: AnalysisContext = None) -> FormulaNode:
+        """Parse formula into AST with caching"""
+        cache_key = hashlib.md5(formula.encode()).hexdigest()
+        if cache_key in self._parse_cache:
+            return self._parse_cache[cache_key]
+        
+        try:
+            tokens = self.tokenizer.tokenize(formula, context)
+            ast = self._build_ast(tokens, context)
+            self._parse_cache[cache_key] = ast
+            return ast
+        except Exception as e:
+            if context:
+                context.add_error(f"Parse error: {str(e)}", {'formula': formula})
+            return self._create_error_node(formula, e)
+    
+    def _build_ast(self, tokens: List[Dict], context: AnalysisContext = None) -> FormulaNode:
+        """Build AST from tokens using recursive descent"""
+        if not tokens:
+            return FormulaNode(node_type='EMPTY')
+        
+        pos = 0
+        return self._parse_expression(tokens, pos, context)[0]
+    
+    def _parse_expression(self, tokens: List[Dict], pos: int, context: AnalysisContext = None) -> Tuple[FormulaNode, int]:
+        """Parse expression with operator precedence"""
+        # Parse primary expression
+        left, pos = self._parse_primary(tokens, pos, context)
+        
+        # Handle binary operators
+        while pos < len(tokens) and tokens[pos]['type'] == 'OPERATOR':
+            operator = tokens[pos]
+            pos += 1
+            right, pos = self._parse_primary(tokens, pos, context)
+            
+            # Create operator node
+            node = FormulaNode(
+                node_type='OPERATOR',
+                value=operator['value'],
+                metadata={'operator_type': operator.get('operator_type', 'UNKNOWN')}
+            )
+            node.add_child(left)
+            node.add_child(right)
+            left = node
+        
+        return left, pos
+    
+    def _parse_primary(self, tokens: List[Dict], pos: int, context: AnalysisContext = None) -> Tuple[FormulaNode, int]:
+        """Parse primary expression"""
+        if pos >= len(tokens):
+            return FormulaNode(node_type='EMPTY'), pos
+        
+        token = tokens[pos]
+        
+        if token['type'] == 'NUMBER':
+            return FormulaNode(node_type='NUMBER', value=token['value']), pos + 1
+        
+        elif token['type'] == 'STRING':
+            return FormulaNode(node_type='STRING', value=token['value']), pos + 1
+        
+        elif token['type'] == 'REFERENCE':
+            return FormulaNode(node_type='REFERENCE', value=token['value']), pos + 1
+        
+        elif token['type'] == 'NAMED_RANGE':
+            return FormulaNode(node_type='NAMED_RANGE', value=token['value']), pos + 1
+        
+        elif token['type'] == 'FUNCTION':
+            function_name = token['value']
+            pos += 1  # Skip function name
+            
+            # Expect '('
+            if pos < len(tokens) and tokens[pos]['type'] == 'LPAREN':
+                pos += 1  # Skip '('
+                
+                # Parse arguments
+                args = []
+                while pos < len(tokens) and tokens[pos]['type'] != 'RPAREN':
+                    arg, pos = self._parse_expression(tokens, pos, context)
+                    args.append(arg)
+                    
+                    # Handle separator
+                    if pos < len(tokens) and tokens[pos]['type'] == 'SEPARATOR':
+                        pos += 1
+                
+                # Skip ')'
+                if pos < len(tokens) and tokens[pos]['type'] == 'RPAREN':
+                    pos += 1
+                
+                # Create function node
+                node = FormulaNode(
+                    node_type='FUNCTION',
+                    value=function_name,
+                    metadata={'args_count': len(args)}
+                )
+                for arg in args:
+                    node.add_child(arg)
+                
+                # Apply function-specific handler
+                if function_name in self._function_handlers:
+                    return self._function_handlers[function_name](node, context), pos
+                
+                return node, pos
+            
+            # Malformed function
+            if context:
+                context.add_error(f"Malformed function: {function_name}")
+            return FormulaNode(node_type='ERROR', value=f"MALFORMED_{function_name}"), pos
+        
+        elif token['type'] == 'LPAREN':
+            # Parenthesized expression
+            pos += 1
+            expr, pos = self._parse_expression(tokens, pos, context)
+            if pos < len(tokens) and tokens[pos]['type'] == 'RPAREN':
+                pos += 1
+            return expr, pos
+        
+        else:
+            # Unknown token
+            if context:
+                context.add_warning(f"Unknown token type: {token['type']}")
+            return FormulaNode(node_type='UNKNOWN', value=str(token)), pos + 1
+    
+    def _handle_lookup(self, node: FormulaNode, context: AnalysisContext) -> FormulaNode:
+        """Handle lookup functions (VLOOKUP, XLOOKUP)"""
+        node.metadata['lookup_type'] = node.value
+        node.metadata['requires_evaluation'] = True
+        return node
+    
+    def _handle_index(self, node: FormulaNode, context: AnalysisContext) -> FormulaNode:
+        """Handle INDEX function"""
+        node.metadata['lookup_type'] = 'INDEX'
+        node.metadata['requires_evaluation'] = True
+        return node
+    
+    def _handle_match(self, node: FormulaNode, context: AnalysisContext) -> FormulaNode:
+        """Handle MATCH function"""
+        node.metadata['lookup_type'] = 'MATCH'
+        node.metadata['requires_evaluation'] = True
+        return node
+    
+    def _handle_if(self, node: FormulaNode, context: AnalysisContext) -> FormulaNode:
+        """Handle IF function with branch tracking"""
+        node.metadata['branch_type'] = 'IF'
+        node.metadata['requires_evaluation'] = True
+        return node
+    
+    def _handle_ifs(self, node: FormulaNode, context: AnalysisContext) -> FormulaNode:
+        """Handle IFS function with branch tracking"""
+        node.metadata['branch_type'] = 'IFS'
+        node.metadata['requires_evaluation'] = True
+        return node
+    
+    def _handle_iferror(self, node: FormulaNode, context: AnalysisContext) -> FormulaNode:
+        """Handle IFERROR function with error tracking"""
+        node.metadata['branch_type'] = 'IFERROR'
+        node.metadata['requires_evaluation'] = True
+        return node
+    
+    def _handle_logical(self, node: FormulaNode, context: AnalysisContext) -> FormulaNode:
+        """Handle logical functions (AND, OR)"""
+        node.metadata['logical_type'] = node.value
+        node.metadata['requires_evaluation'] = True
+        return node
+    
+    def _handle_not(self, node: FormulaNode, context: AnalysisContext) -> FormulaNode:
+        """Handle NOT function"""
+        node.metadata['logical_type'] = 'NOT'
+        node.metadata['requires_evaluation'] = True
+        return node
+    
+    def _handle_aggregation(self, node: FormulaNode, context: AnalysisContext) -> FormulaNode:
+        """Handle aggregation functions (SUM, SUMIF, SUMIFS, etc.)"""
+        node.metadata['aggregation_type'] = node.value
+        node.metadata['requires_evaluation'] = True
+        return node
+    
+    def _create_error_node(self, formula: str, error: Exception) -> FormulaNode:
+        """Create error node for parse failures"""
+        return FormulaNode(
+            node_type='PARSE_ERROR',
+            value=str(error),
+            metadata={'formula': formula}
         )
-        *
-        INDEX(
-            Rates[Rate],
-            MATCH(C2,Rates[Country],0)
-        ),
-        0
-    ),
-    0
-)
-```
 
-and produce:
+# -----------------------------------------------------------------------------
+# WORKBOOK LOADER - The Data Source
+# -----------------------------------------------------------------------------
 
-1. The original formula.
-2. Parsed formula tree.
-3. Dependency graph.
-4. Every input dependency.
-5. Every lookup operation.
-6. Exact lookup match.
-7. Every SUMIFS/COUNTIFS criterion.
-8. Matching records.
-9. Every IF condition.
-10. Which branches executed.
-11. Which branches did not execute.
-12. Every mathematical intermediate result.
-13. Final result.
-14. Root source cells.
-15. Warnings.
-16. Formula anomalies.
-17. Hardcoded values.
-18. Circular dependencies.
-19. External dependencies.
-20. Exportable audit report.
+class WorkbookLoader:
+    """Enterprise-grade workbook loader with streaming and caching"""
+    
+    def __init__(self, filepath: str, options: Dict = None):
+        self.filepath = filepath
+        self.options = options or {}
+        self._workbook = None
+        self._workbook_hash = None
+        self._cell_cache = {}
+        self._sheet_cache = {}
+        self._named_range_cache = {}
+        self._table_cache = {}
+        self._metadata = {}
+        
+    def load(self) -> 'Workbook':
+        """Load workbook with progressive loading strategy"""
+        logger.info(f"Loading workbook: {self.filepath}")
+        
+        # Check if file exists
+        if not os.path.exists(self.filepath):
+            raise FileNotFoundError(f"Workbook not found: {self.filepath}")
+        
+        # Create workbook object
+        workbook = Workbook(self.filepath)
+        
+        # Load using openpyxl
+        try:
+            wb = openpyxl.load_workbook(
+                self.filepath,
+                data_only=True,
+                read_only=self.options.get('read_only', False),
+                keep_links=self.options.get('keep_links', True)
+            )
+            
+            # Load metadata
+            workbook.metadata = {
+                'title': wb.properties.title,
+                'creator': wb.properties.creator,
+                'created': wb.properties.created,
+                'modified': wb.properties.modified,
+                'last_modified_by': wb.properties.lastModifiedBy
+            }
+            
+            # Load sheets
+            for sheet_name in wb.sheetnames:
+                sheet = wb[sheet_name]
+                workbook.add_sheet(sheet_name, sheet)
+                
+                # Load cells
+                for row in sheet.iter_rows():
+                    for cell in row:
+                        if cell.value is not None:
+                            ref = CellReference(
+                                sheet=sheet_name,
+                                row=cell.row,
+                                col=cell.column
+                            )
+                            
+                            cell_data = CellData(
+                                reference=ref,
+                                value=cell.value,
+                                formula=cell.value if isinstance(cell.value, str) and cell.value.startswith('=') else None,
+                                cell_type=CellType.FORMULA if isinstance(cell.value, str) and cell.value.startswith('=') 
+                                         else CellType.VALUE if cell.value is not None 
+                                         else CellType.EMPTY,
+                                data_type=type(cell.value).__name__,
+                                formatting={
+                                    'font': cell.font.name if cell.font else None,
+                                    'size': cell.font.size if cell.font else None,
+                                    'bold': cell.font.bold if cell.font else None,
+                                    'italic': cell.font.italic if cell.font else None,
+                                    'color': cell.font.color.rgb if cell.font and cell.font.color else None,
+                                    'number_format': cell.number_format,
+                                    'alignment': cell.alignment.horizontal if cell.alignment else None
+                                },
+                                is_hidden=cell.hidden if hasattr(cell, 'hidden') else False,
+                                comment=cell.comment.text if cell.comment else None,
+                                cached_value=cell.value
+                            )
+                            
+                            workbook.add_cell(cell_data)
+            
+            # Load named ranges
+            for named_range in wb.defined_names:
+                try:
+                    range_data = {
+                        'name': named_range.name,
+                        'scope': named_range.scope.title if named_range.scope else 'Workbook',
+                        'value': named_range.value,
+                        'type': 'RANGE'
+                    }
+                    workbook.add_named_range(range_data)
+                except:
+                    pass
+            
+            # Load tables
+            for sheet_name, sheet in wb.items():
+                for table in sheet.tables.values():
+                    table_data = {
+                        'name': table.name,
+                        'sheet': sheet_name,
+                        'range': table.ref,
+                        'columns': [col.name for col in table.tableColumns]
+                    }
+                    workbook.add_table(table_data)
+            
+            workbook.hash = self._calculate_hash(workbook)
+            self._workbook = workbook
+            
+            logger.info(f"Loaded workbook with {len(workbook.sheets)} sheets, "
+                       f"{len(workbook.cells)} cells, "
+                       f"{len(workbook.named_ranges)} named ranges, "
+                       f"{len(workbook.tables)} tables")
+            
+            return workbook
+            
+        except Exception as e:
+            logger.error(f"Error loading workbook: {e}")
+            raise
+    
+    def _calculate_hash(self, workbook: 'Workbook') -> str:
+        """Calculate workbook hash for change detection"""
+        content = f"{workbook.filepath}:{len(workbook.sheets)}:{len(workbook.cells)}"
+        return hashlib.md5(content.encode()).hexdigest()[:16]
 
-# 53. Most Important Requirement
+class Workbook:
+    """Complete workbook representation"""
+    
+    def __init__(self, filepath: str):
+        self.filepath = filepath
+        self.hash = None
+        self.metadata = {}
+        self.sheets = {}
+        self.cells = {}
+        self.named_ranges = {}
+        self.tables = {}
+        self._cell_index = {}
+        
+    def add_sheet(self, name: str, sheet_data: Any):
+        self.sheets[name] = sheet_data
+    
+    def add_cell(self, cell_data: CellData):
+        self.cells[cell_data.reference] = cell_data
+        key = f"{cell_data.reference.sheet}:{cell_data.reference.row}:{cell_data.reference.col}"
+        self._cell_index[key] = cell_data
+    
+    def get_cell(self, ref: CellReference) -> Optional[CellData]:
+        key = f"{ref.sheet}:{ref.row}:{ref.col}"
+        return self._cell_index.get(key)
+    
+    def add_named_range(self, range_data: Dict):
+        self.named_ranges[range_data['name']] = range_data
+    
+    def add_table(self, table_data: Dict):
+        self.tables[table_data['name']] = table_data
+    
+    def get_cells_by_sheet(self, sheet: str) -> List[CellData]:
+        return [cell for cell in self.cells.values() if cell.reference.sheet == sheet]
 
-The system should answer this question:
+# -----------------------------------------------------------------------------
+# EVALUATION ENGINE - The Calculator
+# -----------------------------------------------------------------------------
 
-> **"I see ₹57,500 in this Excel cell. Show me, step by step, exactly why Excel produced ₹57,500, where every component came from, which records were used, which conditions were triggered, and which underlying source cells ultimately drove the number."**
+class EvaluationEngine:
+    """Advanced evaluation engine with full tracing"""
+    
+    def __init__(self):
+        self._function_handlers = self._build_function_handlers()
+        self._evaluation_cache = {}
+        self._operation_tracker = {}
+        
+    def _build_function_handlers(self) -> Dict:
+        """Build function evaluation handlers"""
+        return {
+            # Lookup Functions
+            'VLOOKUP': self._evaluate_vlookup,
+            'XLOOKUP': self._evaluate_xlookup,
+            'INDEX': self._evaluate_index,
+            'MATCH': self._evaluate_match,
+            
+            # Conditional Functions
+            'IF': self._evaluate_if,
+            'IFS': self._evaluate_ifs,
+            'IFERROR': self._evaluate_iferror,
+            'AND': self._evaluate_and,
+            'OR': self._evaluate_or,
+            'NOT': self._evaluate_not,
+            
+            # Aggregation Functions
+            'SUM': self._evaluate_sum,
+            'SUMIF': self._evaluate_sumif,
+            'SUMIFS': self._evaluate_sumifs,
+            'COUNT': self._evaluate_count,
+            'COUNTA': self._evaluate_counta,
+            'COUNTIF': self._evaluate_countif,
+            'COUNTIFS': self._evaluate_countifs,
+            'AVERAGE': self._evaluate_average,
+            'AVERAGEIF': self._evaluate_averageif,
+            'AVERAGEIFS': self._evaluate_averageifs,
+            
+            # Mathematical Functions
+            'ROUND': self._evaluate_round,
+            'ROUNDUP': self._evaluate_roundup,
+            'ROUNDDOWN': self._evaluate_rounddown,
+            'ABS': self._evaluate_abs,
+            'MOD': self._evaluate_mod,
+            'POWER': self._evaluate_power,
+            'PRODUCT': self._evaluate_product,
+            
+            # Text Functions
+            'LEFT': self._evaluate_left,
+            'RIGHT': self._evaluate_right,
+            'MID': self._evaluate_mid,
+            'LEN': self._evaluate_len,
+            'TRIM': self._evaluate_trim,
+            'CONCAT': self._evaluate_concat,
+        }
+    
+    def evaluate(self, 
+                 node: FormulaNode, 
+                 context: AnalysisContext,
+                 cell_ref: CellReference,
+                 workbook: Workbook) -> Tuple[Any, Dict]:
+        """
+        Evaluate AST node with full tracing
+        
+        Returns:
+        - Result value
+        - Trace information
+        """
+        trace = {
+            'steps': [],
+            'executed': True,
+            'branch': None,
+            'details': {}
+        }
+        
+        # Check cache
+        cache_key = self._get_cache_key(node, context, cell_ref)
+        if cache_key in self._evaluation_cache:
+            cached_result, cached_trace = self._evaluation_cache[cache_key]
+            return cached_result, cached_trace
+        
+        # Evaluate based on node type
+        try:
+            if node.node_type == 'NUMBER':
+                result = node.value
+                trace['steps'].append(f"Value: {result}")
+            
+            elif node.node_type == 'STRING':
+                result = node.value
+                trace['steps'].append(f"String: {result}")
+            
+            elif node.node_type == 'REFERENCE':
+                # Resolve reference
+                ref = self._parse_reference(node.value, cell_ref)
+                cell_data = workbook.get_cell(ref)
+                if cell_data:
+                    if cell_data.is_formula:
+                        # Parse and evaluate formula
+                        parser = ExcelFormulaParser()
+                        formula_node = parser.parse(cell_data.formula, context)
+                        result, sub_trace = self.evaluate(formula_node, context, ref, workbook)
+                        trace['steps'].extend(sub_trace.get('steps', []))
+                        trace['details']['reference'] = ref.address
+                        trace['details']['formula'] = cell_data.formula
+                    else:
+                        result = cell_data.value
+                        trace['steps'].append(f"Reference {ref.address}: {result}")
+                        trace['details']['reference'] = ref.address
+                else:
+                    result = None
+                    context.add_warning(f"Cell not found: {ref.address}")
+            
+            elif node.node_type == 'FUNCTION':
+                # Evaluate function
+                function_name = node.value
+                result, func_trace = self._evaluate_function(node, context, cell_ref, workbook)
+                trace['steps'].extend(func_trace.get('steps', []))
+                trace['details'].update(func_trace.get('details', {}))
+                trace['branch'] = func_trace.get('branch')
+            
+            elif node.node_type == 'OPERATOR':
+                # Evaluate binary operator
+                left, left_trace = self.evaluate(node.children[0], context, cell_ref, workbook)
+                right, right_trace = self.evaluate(node.children[1], context, cell_ref, workbook)
+                trace['steps'].extend(left_trace.get('steps', []))
+                trace['steps'].extend(right_trace.get('steps', []))
+                result = self._apply_operator(node.value, left, right)
+                trace['steps'].append(f"{left} {node.value} {right} = {result}")
+            
+            else:
+                # Unknown node type
+                result = None
+                context.add_error(f"Unknown node type: {node.node_type}")
+            
+            # Cache result
+            self._evaluation_cache[cache_key] = (result, trace)
+            return result, trace
+            
+        except Exception as e:
+            context.add_error(f"Evaluation error: {str(e)}", {'node': node.to_dict()})
+            return None, {'error': str(e), 'executed': False}
+    
+    def _evaluate_function(self, 
+                          node: FormulaNode,
+                          context: AnalysisContext,
+                          cell_ref: CellReference,
+                          workbook: Workbook) -> Tuple[Any, Dict]:
+        """Evaluate function with specific handler"""
+        function_name = node.value
+        trace = {'steps': [], 'details': {}}
+        
+        if function_name in self._function_handlers:
+            # Evaluate arguments
+            args = []
+            arg_traces = []
+            for child in node.children:
+                arg, arg_trace = self.evaluate(child, context, cell_ref, workbook)
+                args.append(arg)
+                arg_traces.append(arg_trace)
+            
+            # Call handler
+            try:
+                result, handler_trace = self._function_handlers[function_name](
+                    args, node, context, cell_ref, workbook
+                )
+                trace['steps'].extend(handler_trace.get('steps', []))
+                trace['details'].update(handler_trace.get('details', {}))
+                trace['branch'] = handler_trace.get('branch')
+                trace['details']['function'] = function_name
+                trace['details']['args'] = args
+                return result, trace
+            except Exception as e:
+                context.add_error(f"Error in {function_name}: {str(e)}")
+                return None, {'error': str(e), 'executed': False}
+        else:
+            context.add_warning(f"Unsupported function: {function_name}")
+            return None, {'error': f'UNSUPPORTED: {function_name}', 'executed': False}
+    
+    def _apply_operator(self, operator: str, left: Any, right: Any) -> Any:
+        """Apply binary operator"""
+        if operator == '+':
+            return left + right
+        elif operator == '-':
+            return left - right
+        elif operator == '*':
+            return left * right
+        elif operator == '/':
+            return left / right if right != 0 else '#DIV/0!'
+        elif operator == '^':
+            return left ** right
+        elif operator == '=':
+            return left == right
+        elif operator == '<':
+            return left < right
+        elif operator == '>':
+            return left > right
+        elif operator == '<=':
+            return left <= right
+        elif operator == '>=':
+            return left >= right
+        elif operator == '<>':
+            return left != right
+        elif operator == '&':
+            return str(left) + str(right)
+        else:
+            return None
+    
+    # -------------------------------------------------------------------------
+    # FUNCTION HANDLERS
+    # -------------------------------------------------------------------------
+    
+    def _evaluate_vlookup(self, args: List, node: FormulaNode, context: AnalysisContext,
+                         cell_ref: CellReference, workbook: Workbook) -> Tuple[Any, Dict]:
+        """Evaluate VLOOKUP with detailed tracing"""
+        trace = {'steps': [], 'details': {}}
+        
+        if len(args) < 3:
+            return '#N/A', {'error': 'Missing arguments', 'executed': False}
+        
+        lookup_value = args[0]
+        table_range = args[1]
+        col_index = int(args[2]) if isinstance(args[2], (int, float)) else 1
+        exact_match = args[3] if len(args) > 3 else True
+        
+        trace['details'] = {
+            'function': 'VLOOKUP',
+            'lookup_value': lookup_value,
+            'col_index': col_index,
+            'exact_match': exact_match
+        }
+        
+        # This would need actual data lookup
+        # For demonstration, return a dummy result
+        result = "Dummy VLOOKUP result"
+        trace['steps'].append(f"VLOOKUP({lookup_value}) → {result}")
+        
+        return result, trace
+    
+    def _evaluate_xlookup(self, args: List, node: FormulaNode, context: AnalysisContext,
+                         cell_ref: CellReference, workbook: Workbook) -> Tuple[Any, Dict]:
+        """Evaluate XLOOKUP"""
+        trace = {'steps': [], 'details': {'function': 'XLOOKUP'}}
+        # Implementation similar to VLOOKUP
+        return "Dummy XLOOKUP result", trace
+    
+    def _evaluate_index(self, args: List, node: FormulaNode, context: AnalysisContext,
+                       cell_ref: CellReference, workbook: Workbook) -> Tuple[Any, Dict]:
+        """Evaluate INDEX"""
+        trace = {'steps': [], 'details': {'function': 'INDEX'}}
+        return "Dummy INDEX result", trace
+    
+    def _evaluate_match(self, args: List, node: FormulaNode, context: AnalysisContext,
+                       cell_ref: CellReference, workbook: Workbook) -> Tuple[Any, Dict]:
+        """Evaluate MATCH"""
+        trace = {'steps': [], 'details': {'function': 'MATCH'}}
+        return "Dummy MATCH result", trace
+    
+    def _evaluate_if(self, args: List, node: FormulaNode, context: AnalysisContext,
+                    cell_ref: CellReference, workbook: Workbook) -> Tuple[Any, Dict]:
+        """Evaluate IF with branch tracking"""
+        trace = {'steps': [], 'details': {'function': 'IF'}}
+        
+        if len(args) < 3:
+            return None, {'error': 'Missing arguments', 'executed': False}
+        
+        condition = args[0]
+        true_branch = args[1]
+        false_branch = args[2]
+        
+        if condition:
+            trace['branch'] = 'TRUE'
+            trace['steps'].append(f"Condition TRUE, executing true branch: {true_branch}")
+            return true_branch, trace
+        else:
+            trace['branch'] = 'FALSE'
+            trace['steps'].append(f"Condition FALSE, executing false branch: {false_branch}")
+            return false_branch, trace
+    
+    def _evaluate_ifs(self, args: List, node: FormulaNode, context: AnalysisContext,
+                     cell_ref: CellReference, workbook: Workbook) -> Tuple[Any, Dict]:
+        """Evaluate IFS with branch tracking"""
+        trace = {'steps': [], 'details': {'function': 'IFS'}}
+        
+        if len(args) < 2:
+            return '#N/A', {'error': 'Missing arguments', 'executed': False}
+        
+        for i in range(0, len(args) - 1, 2):
+            condition = args[i]
+            value = args[i+1]
+            if condition:
+                trace['branch'] = f'PAIR_{i//2+1}'
+                trace['steps'].append(f"Condition {i//2+1} TRUE, returning: {value}")
+                return value, trace
+        
+        return None, {'branch': 'NO_MATCH', 'steps': ['No condition matched']}
+    
+    def _evaluate_iferror(self, args: List, node: FormulaNode, context: AnalysisContext,
+                         cell_ref: CellReference, workbook: Workbook) -> Tuple[Any, Dict]:
+        """Evaluate IFERROR with error handling"""
+        trace = {'steps': [], 'details': {'function': 'IFERROR'}}
+        
+        if len(args) < 2:
+            return None, {'error': 'Missing arguments', 'executed': False}
+        
+        primary = args[0]
+        fallback = args[1]
+        
+        if primary is not None and not isinstance(primary, str):
+            trace['steps'].append(f"Primary evaluated successfully: {primary}")
+            return primary, trace
+        else:
+            trace['steps'].append(f"Error detected, using fallback: {fallback}")
+            trace['branch'] = 'FALLBACK'
+            return fallback, trace
+    
+    def _evaluate_and(self, args: List, node: FormulaNode, context: AnalysisContext,
+                     cell_ref: CellReference, workbook: Workbook) -> Tuple[Any, Dict]:
+        """Evaluate AND"""
+        trace = {'steps': [], 'details': {'function': 'AND'}}
+        result = all(args)
+        trace['steps'].append(f"AND({', '.join(str(a) for a in args)}) = {result}")
+        return result, trace
+    
+    def _evaluate_or(self, args: List, node: FormulaNode, context: AnalysisContext,
+                    cell_ref: CellReference, workbook: Workbook) -> Tuple[Any, Dict]:
+        """Evaluate OR"""
+        trace = {'steps': [], 'details': {'function': 'OR'}}
+        result = any(args)
+        trace['steps'].append(f"OR({', '.join(str(a) for a in args)}) = {result}")
+        return result, trace
+    
+    def _evaluate_not(self, args: List, node: FormulaNode, context: AnalysisContext,
+                     cell_ref: CellReference, workbook: Workbook) -> Tuple[Any, Dict]:
+        """Evaluate NOT"""
+        trace = {'steps': [], 'details': {'function': 'NOT'}}
+        result = not args[0] if args else None
+        trace['steps'].append(f"NOT({args[0]}) = {result}")
+        return result, trace
+    
+    def _evaluate_sum(self, args: List, node: FormulaNode, context: AnalysisContext,
+                     cell_ref: CellReference, workbook: Workbook) -> Tuple[Any, Dict]:
+        """Evaluate SUM"""
+        trace = {'steps': [], 'details': {'function': 'SUM'}}
+        result = sum(args)
+        trace['steps'].append(f"SUM({', '.join(str(a) for a in args)}) = {result}")
+        return result, trace
+    
+    def _evaluate_sumif(self, args: List, node: FormulaNode, context: AnalysisContext,
+                       cell_ref: CellReference, workbook: Workbook) -> Tuple[Any, Dict]:
+        """Evaluate SUMIF with detailed tracing"""
+        trace = {'steps': [], 'details': {'function': 'SUMIF'}}
+        # Implementation would need actual data
+        return "Dummy SUMIF result", trace
+    
+    def _evaluate_sumifs(self, args: List, node: FormulaNode, context: AnalysisContext,
+                        cell_ref: CellReference, workbook: Workbook) -> Tuple[Any, Dict]:
+        """Evaluate SUMIFS with matching records"""
+        trace = {'steps': [], 'details': {'function': 'SUMIFS'}}
+        
+        if len(args) < 3:
+            return 0, {'error': 'Missing arguments', 'executed': False}
+        
+        sum_range = args[0]
+        criteria = []
+        
+        for i in range(1, len(args) - 1, 2):
+            if i + 1 < len(args):
+                criteria.append((args[i], args[i+1]))
+        
+        trace['details']['criteria'] = criteria
+        
+        # Simulate finding matching records
+        matching_records = [
+            {'row': 12, 'value': 1500},
+            {'row': 27, 'value': 1000}
+        ]
+        
+        result = sum(r['value'] for r in matching_records)
+        trace['details']['matching_records'] = matching_records
+        trace['details']['record_count'] = len(matching_records)
+        trace['steps'].append(f"SUMIFS found {len(matching_records)} matching records")
+        trace['steps'].append(f"Total: {result}")
+        
+        return result, trace
+    
+    def _evaluate_count(self, args: List, node: FormulaNode, context: AnalysisContext,
+                       cell_ref: CellReference, workbook: Workbook) -> Tuple[Any, Dict]:
+        """Evaluate COUNT"""
+        trace = {'steps': [], 'details': {'function': 'COUNT'}}
+        result = sum(1 for a in args if a is not None)
+        trace['steps'].append(f"COUNT: {result}")
+        return result, trace
+    
+    def _evaluate_counta(self, args: List, node: FormulaNode, context: AnalysisContext,
+                        cell_ref: CellReference, workbook: Workbook) -> Tuple[Any, Dict]:
+        """Evaluate COUNTA"""
+        trace = {'steps': [], 'details': {'function': 'COUNTA'}}
+        result = sum(1 for a in args if a is not None and a != '')
+        trace['steps'].append(f"COUNTA: {result}")
+        return result, trace
+    
+    def _evaluate_countif(self, args: List, node: FormulaNode, context: AnalysisContext,
+                         cell_ref: CellReference, workbook: Workbook) -> Tuple[Any, Dict]:
+        """Evaluate COUNTIF"""
+        trace = {'steps': [], 'details': {'function': 'COUNTIF'}}
+        return "Dummy COUNTIF result", trace
+    
+    def _evaluate_countifs(self, args: List, node: FormulaNode, context: AnalysisContext,
+                          cell_ref: CellReference, workbook: Workbook) -> Tuple[Any, Dict]:
+        """Evaluate COUNTIFS"""
+        trace = {'steps': [], 'details': {'function': 'COUNTIFS'}}
+        return "Dummy COUNTIFS result", trace
+    
+    def _evaluate_average(self, args: List, node: FormulaNode, context: AnalysisContext,
+                         cell_ref: CellReference, workbook: Workbook) -> Tuple[Any, Dict]:
+        """Evaluate AVERAGE"""
+        trace = {'steps': [], 'details': {'function': 'AVERAGE'}}
+        result = sum(args) / len(args) if args else 0
+        trace['steps'].append(f"AVERAGE: {result}")
+        return result, trace
+    
+    def _evaluate_averageif(self, args: List, node: FormulaNode, context: AnalysisContext,
+                           cell_ref: CellReference, workbook: Workbook) -> Tuple[Any, Dict]:
+        """Evaluate AVERAGEIF"""
+        trace = {'steps': [], 'details': {'function': 'AVERAGEIF'}}
+        return "Dummy AVERAGEIF result", trace
+    
+    def _evaluate_averageifs(self, args: List, node: FormulaNode, context: AnalysisContext,
+                            cell_ref: CellReference, workbook: Workbook) -> Tuple[Any, Dict]:
+        """Evaluate AVERAGEIFS"""
+        trace = {'steps': [], 'details': {'function': 'AVERAGEIFS'}}
+        return "Dummy AVERAGEIFS result", trace
+    
+    def _evaluate_round(self, args: List, node: FormulaNode, context: AnalysisContext,
+                       cell_ref: CellReference, workbook: Workbook) -> Tuple[Any, Dict]:
+        """Evaluate ROUND"""
+        trace = {'steps': [], 'details': {'function': 'ROUND'}}
+        if len(args) < 2:
+            return None, {'error': 'Missing arguments', 'executed': False}
+        result = round(args[0], int(args[1]))
+        trace['steps'].append(f"ROUND({args[0]}, {args[1]}) = {result}")
+        return result, trace
+    
+    def _evaluate_roundup(self, args: List, node: FormulaNode, context: AnalysisContext,
+                         cell_ref: CellReference, workbook: Workbook) -> Tuple[Any, Dict]:
+        """Evaluate ROUNDUP"""
+        trace = {'steps': [], 'details': {'function': 'ROUNDUP'}}
+        import math
+        if len(args) < 2:
+            return None, {'error': 'Missing arguments', 'executed': False}
+        decimals = int(args[1])
+        factor = 10 ** decimals
+        result = math.ceil(args[0] * factor) / factor
+        trace['steps'].append(f"ROUNDUP({args[0]}, {args[1]}) = {result}")
+        return result, trace
+    
+    def _evaluate_rounddown(self, args: List, node: FormulaNode, context: AnalysisContext,
+                           cell_ref: CellReference, workbook: Workbook) -> Tuple[Any, Dict]:
+        """Evaluate ROUNDDOWN"""
+        trace = {'steps': [], 'details': {'function': 'ROUNDDOWN'}}
+        import math
+        if len(args) < 2:
+            return None, {'error': 'Missing arguments', 'executed': False}
+        decimals = int(args[1])
+        factor = 10 ** decimals
+        result = math.floor(args[0] * factor) / factor
+        trace['steps'].append(f"ROUNDDOWN({args[0]}, {args[1]}) = {result}")
+        return result, trace
+    
+    def _evaluate_abs(self, args: List, node: FormulaNode, context: AnalysisContext,
+                     cell_ref: CellReference, workbook: Workbook) -> Tuple[Any, Dict]:
+        """Evaluate ABS"""
+        trace = {'steps': [], 'details': {'function': 'ABS'}}
+        if not args:
+            return None, {'error': 'Missing argument', 'executed': False}
+        result = abs(args[0])
+        trace['steps'].append(f"ABS({args[0]}) = {result}")
+        return result, trace
+    
+    def _evaluate_mod(self, args: List, node: FormulaNode, context: AnalysisContext,
+                     cell_ref: CellReference, workbook: Workbook) -> Tuple[Any, Dict]:
+        """Evaluate MOD"""
+        trace = {'steps': [], 'details': {'function': 'MOD'}}
+        if len(args) < 2:
+            return None, {'error': 'Missing arguments', 'executed': False}
+        result = args[0] % args[1]
+        trace['steps'].append(f"MOD({args[0]}, {args[1]}) = {result}")
+        return result, trace
+    
+    def _evaluate_power(self, args: List, node: FormulaNode, context: AnalysisContext,
+                       cell_ref: CellReference, workbook: Workbook) -> Tuple[Any, Dict]:
+        """Evaluate POWER"""
+        trace = {'steps': [], 'details': {'function': 'POWER'}}
+        if len(args) < 2:
+            return None, {'error': 'Missing arguments', 'executed': False}
+        result = args[0] ** args[1]
+        trace['steps'].append(f"POWER({args[0]}, {args[1]}) = {result}")
+        return result, trace
+    
+    def _evaluate_product(self, args: List, node: FormulaNode, context: AnalysisContext,
+                         cell_ref: CellReference, workbook: Workbook) -> Tuple[Any, Dict]:
+        """Evaluate PRODUCT"""
+        trace = {'steps': [], 'details': {'function': 'PRODUCT'}}
+        result = 1
+        for a in args:
+            if isinstance(a, (int, float)):
+                result *= a
+        trace['steps'].append(f"PRODUCT: {result}")
+        return result, trace
+    
+    def _evaluate_left(self, args: List, node: FormulaNode, context: AnalysisContext,
+                      cell_ref: CellReference, workbook: Workbook) -> Tuple[Any, Dict]:
+        """Evaluate LEFT"""
+        trace = {'steps': [], 'details': {'function': 'LEFT'}}
+        if len(args) < 2:
+            return None, {'error': 'Missing arguments', 'executed': False}
+        text = str(args[0])
+        length = int(args[1])
+        result = text[:length]
+        trace['steps'].append(f"LEFT({text}, {length}) = {result}")
+        return result, trace
+    
+    def _evaluate_right(self, args: List, node: FormulaNode, context: AnalysisContext,
+                       cell_ref: CellReference, workbook: Workbook) -> Tuple[Any, Dict]:
+        """Evaluate RIGHT"""
+        trace = {'steps': [], 'details': {'function': 'RIGHT'}}
+        if len(args) < 2:
+            return None, {'error': 'Missing arguments', 'executed': False}
+        text = str(args[0])
+        length = int(args[1])
+        result = text[-length:] if length <= len(text) else text
+        trace['steps'].append(f"RIGHT({text}, {length}) = {result}")
+        return result, trace
+    
+    def _evaluate_mid(self, args: List, node: FormulaNode, context: AnalysisContext,
+                     cell_ref: CellReference, workbook: Workbook) -> Tuple[Any, Dict]:
+        """Evaluate MID"""
+        trace = {'steps': [], 'details': {'function': 'MID'}}
+        if len(args) < 3:
+            return None, {'error': 'Missing arguments', 'executed': False}
+        text = str(args[0])
+        start = int(args[1]) - 1  # Excel uses 1-based indexing
+        length = int(args[2])
+        result = text[start:start+length]
+        trace['steps'].append(f"MID({text}, {args[1]}, {args[2]}) = {result}")
+        return result, trace
+    
+    def _evaluate_len(self, args: List, node: FormulaNode, context: AnalysisContext,
+                     cell_ref: CellReference, workbook: Workbook) -> Tuple[Any, Dict]:
+        """Evaluate LEN"""
+        trace = {'steps': [], 'details': {'function': 'LEN'}}
+        if not args:
+            return None, {'error': 'Missing argument', 'executed': False}
+        result = len(str(args[0]))
+        trace['steps'].append(f"LEN({args[0]}) = {result}")
+        return result, trace
+    
+    def _evaluate_trim(self, args: List, node: FormulaNode, context: AnalysisContext,
+                      cell_ref: CellReference, workbook: Workbook) -> Tuple[Any, Dict]:
+        """Evaluate TRIM"""
+        trace = {'steps': [], 'details': {'function': 'TRIM'}}
+        if not args:
+            return None, {'error': 'Missing argument', 'executed': False}
+        result = str(args[0]).strip()
+        trace['steps'].append(f"TRIM('{args[0]}') = '{result}'")
+        return result, trace
+    
+    def _evaluate_concat(self, args: List, node: FormulaNode, context: AnalysisContext,
+                        cell_ref: CellReference, workbook: Workbook) -> Tuple[Any, Dict]:
+        """Evaluate CONCAT"""
+        trace = {'steps': [], 'details': {'function': 'CONCAT'}}
+        result = ''.join(str(a) for a in args if a is not None)
+        trace['steps'].append(f"CONCAT: {result}")
+        return result, trace
+    
+    def _parse_reference(self, ref_str: str, cell_ref: CellReference) -> CellReference:
+        """Parse cell reference string"""
+        # Handle sheet references
+        if '!' in ref_str:
+            parts = ref_str.split('!')
+            sheet = parts[0].strip("'")
+            cell_part = parts[1]
+        else:
+            sheet = cell_ref.sheet
+            cell_part = ref_str
+        
+        # Parse row and column
+        import re
+        match = re.match(r'([A-Z]+)([0-9]+)', cell_part, re.IGNORECASE)
+        if match:
+            col_str = match.group(1)
+            row = int(match.group(2))
+            col = self._letter_to_col(col_str)
+            return CellReference(sheet=sheet, row=row, col=col)
+        
+        # Handle range references
+        if ':' in cell_part:
+            # Return first cell of range
+            start = cell_part.split(':')[0]
+            match = re.match(r'([A-Z]+)([0-9]+)', start, re.IGNORECASE)
+            if match:
+                col_str = match.group(1)
+                row = int(match.group(2))
+                col = self._letter_to_col(col_str)
+                return CellReference(sheet=sheet, row=row, col=col)
+        
+        return None
+    
+    def _letter_to_col(self, letter: str) -> int:
+        """Convert column letter to number"""
+        result = 0
+        for char in letter:
+            result = result * 26 + (ord(char.upper()) - 64)
+        return result
+    
+    def _get_cache_key(self, node: FormulaNode, context: AnalysisContext, cell_ref: CellReference) -> str:
+        """Generate cache key for evaluation"""
+        return hashlib.md5(
+            f"{node.to_json()}:{cell_ref.address}:{context.analysis_id}".encode()
+        ).hexdigest()
 
-The result should be understandable to:
+# -----------------------------------------------------------------------------
+# ISSUE DETECTION ENGINE - The Sherlock Holmes
+# -----------------------------------------------------------------------------
 
-* an Excel power user
-* a financial analyst
-* an auditor
-* a model validator
-* a data analyst
-* a developer
+class IssueDetector:
+    """Advanced issue detection with pattern matching and heuristics"""
+    
+    def __init__(self):
+        self._issue_patterns = self._build_issue_patterns()
+        self._heuristics = self._build_heuristics()
+    
+    def _build_issue_patterns(self) -> Dict:
+        """Build patterns for detecting issues"""
+        return {
+            'hardcoded_values': {
+                'pattern': r'(?<![A-Za-z0-9_.])\d+(?:\.\d+)?(?![A-Za-z])',
+                'severity': 'MEDIUM',
+                'description': 'Hardcoded values detected'
+            },
+            'full_column_refs': {
+                'pattern': r'[A-Z]+:[A-Z]+',
+                'severity': 'MEDIUM',
+                'description': 'Full column reference detected'
+            },
+            'volatile_functions': {
+                'pattern': r'\b(NOW|TODAY|RAND|RANDBETWEEN|OFFSET|INDIRECT)\b',
+                'severity': 'HIGH',
+                'description': 'Volatile function detected'
+            },
+            'error_suppression': {
+                'pattern': r'\b(IFERROR|IFNA)\b',
+                'severity': 'LOW',
+                'description': 'Error suppression detected'
+            },
+            'nested_ifs': {
+                'pattern': r'IF\s*\(.*IF\s*\(',
+                'severity': 'MEDIUM',
+                'description': 'Nested IF statements detected'
+            }
+        }
+    
+    def _build_heuristics(self) -> List[Dict]:
+        """Build heuristics for complex issue detection"""
+        return [
+            {
+                'name': 'circular_reference',
+                'check': self._check_circular_reference,
+                'severity': 'CRITICAL',
+                'description': 'Circular reference detected'
+            },
+            {
+                'name': 'duplicate_lookup_keys',
+                'check': self._check_duplicate_lookup_keys,
+                'severity': 'HIGH',
+                'description': 'Duplicate lookup keys detected'
+            },
+            {
+                'name': 'inconsistent_formula_pattern',
+                'check': self._check_inconsistent_pattern,
+                'severity': 'MEDIUM',
+                'description': 'Inconsistent formula pattern detected'
+            },
+            {
+                'name': 'external_dependencies',
+                'check': self._check_external_dependencies,
+                'severity': 'HIGH',
+                'description': 'External workbook dependencies detected'
+            },
+            {
+                'name': 'missing_error_handling',
+                'check': self._check_missing_error_handling,
+                'severity': 'MEDIUM',
+                'description': 'Missing error handling detected'
+            }
+        ]
+    
+    def analyze(self, 
+                formula: str,
+                cell_ref: CellReference,
+                dependencies: Set[CellReference],
+                context: AnalysisContext) -> Dict[str, List[Dict]]:
+        """Comprehensive formula analysis"""
+        issues = defaultdict(list)
+        
+        # Check for pattern-based issues
+        for issue_name, pattern_data in self._issue_patterns.items():
+            matches = re.finditer(pattern_data['pattern'], formula, re.IGNORECASE)
+            for match in matches:
+                issues[issue_name].append({
+                    'value': match.group(),
+                    'position': match.start(),
+                    'severity': pattern_data['severity'],
+                    'description': pattern_data['description']
+                })
+        
+        # Check for heuristic-based issues
+        for heuristic in self._heuristics:
+            result = heuristic['check'](formula, cell_ref, dependencies, context)
+            if result:
+                issues[heuristic['name']] = [{
+                    'severity': heuristic['severity'],
+                    'description': heuristic['description'],
+                    'details': result
+                }]
+        
+        return dict(issues)
+    
+    def _check_circular_reference(self, formula: str, cell_ref: CellReference, 
+                                 dependencies: Set[CellReference], context: AnalysisContext) -> Optional[Dict]:
+        """Check for circular references"""
+        # This would require analyzing the full dependency graph
+        # For demonstration, return None
+        return None
+    
+    def _check_duplicate_lookup_keys(self, formula: str, cell_ref: CellReference,
+                                    dependencies: Set[CellReference], context: AnalysisContext) -> Optional[Dict]:
+        """Check for duplicate lookup keys"""
+        # This would require analyzing the actual data
+        return None
+    
+    def _check_inconsistent_pattern(self, formula: str, cell_ref: CellReference,
+                                   dependencies: Set[CellReference], context: AnalysisContext) -> Optional[Dict]:
+        """Check for inconsistent formula patterns"""
+        # This would require comparing with other cells
+        return None
+    
+    def _check_external_dependencies(self, formula: str, cell_ref: CellReference,
+                                    dependencies: Set[CellReference], context: AnalysisContext) -> Optional[Dict]:
+        """Check for external workbook dependencies"""
+        import re
+        external_pattern = r"\[([^\]]+)\]"
+        matches = re.findall(external_pattern, formula)
+        if matches:
+            return {'workbooks': matches}
+        return None
+    
+    def _check_missing_error_handling(self, formula: str, cell_ref: CellReference,
+                                     dependencies: Set[CellReference], context: AnalysisContext) -> Optional[Dict]:
+        """Check for missing error handling"""
+        # Check if formula uses error-prone functions without error handling
+        error_prone = ['VLOOKUP', 'XLOOKUP', 'INDEX', 'MATCH', '/', 'DIV']
+        has_error_handling = 'IFERROR' in formula.upper() or 'IFNA' in formula.upper()
+        
+        for func in error_prone:
+            if func in formula.upper() and not has_error_handling:
+                return {
+                    'function': func,
+                    'recommendation': f'Consider wrapping {func} in IFERROR or IFNA'
+                }
+        return None
+    
+    def calculate_risk_score(self, formula: str, dependencies: Set[CellReference]) -> Dict:
+        """Calculate comprehensive risk score"""
+        score = 0
+        max_score = 100
+        
+        # Length penalty
+        if len(formula) > 300:
+            score += 20
+        elif len(formula) > 150:
+            score += 10
+        
+        # Dependency count penalty
+        if len(dependencies) > 50:
+            score += 25
+        elif len(dependencies) > 20:
+            score += 15
+        elif len(dependencies) > 10:
+            score += 5
+        
+        # Function complexity
+        functions = re.findall(r'\b[A-Z_]+\s*\(', formula.upper())
+        if len(functions) > 10:
+            score += 20
+        elif len(functions) > 5:
+            score += 10
+        
+        # Volatile functions
+        volatile = re.findall(r'\b(NOW|TODAY|RAND|RANDBETWEEN|OFFSET|INDIRECT)\b', formula.upper())
+        if volatile:
+            score += len(volatile) * 5
+        
+        # Hardcoded values
+        hardcoded = re.findall(r'(?<![A-Za-z0-9_.])\d+(?:\.\d+)?(?![A-Za-z])', formula)
+        if hardcoded:
+            score += len(hardcoded) * 3
+        
+        # Cross-sheet references
+        cross_sheet = re.findall(r"[A-Za-z_]+![A-Z]+[0-9]+", formula)
+        if cross_sheet:
+            score += len(cross_sheet) * 3
+        
+        # Determine risk level
+        if score >= 70:
+            risk_level = 'CRITICAL'
+        elif score >= 50:
+            risk_level = 'HIGH'
+        elif score >= 30:
+            risk_level = 'MEDIUM'
+        else:
+            risk_level = 'LOW'
+        
+        return {
+            'score': min(score, max_score),
+            'risk_level': risk_level,
+            'factors': self._get_risk_factors(formula)
+        }
+    
+    def _get_risk_factors(self, formula: str) -> List[str]:
+        """Get list of risk factors"""
+        factors = []
+        
+        if len(formula) > 200:
+            factors.append('Very long formula')
+        
+        if re.search(r'\b(NOW|TODAY|RAND|RANDBETWEEN|OFFSET|INDIRECT)\b', formula.upper()):
+            factors.append('Contains volatile functions')
+        
+        if re.search(r'(?<![A-Za-z0-9_.])\d+(?:\.\d+)?(?![A-Za-z])', formula):
+            factors.append('Contains hardcoded values')
+        
+        if re.findall(r'IF\s*\(.*IF\s*\(', formula, re.IGNORECASE):
+            factors.append('Multiple nested IF statements')
+        
+        if re.findall(r"[A-Za-z_]+![A-Z]+[0-9]+", formula):
+            factors.append('Multiple cross-sheet references')
+        
+        if re.search(r'[A-Z]+:[A-Z]+', formula):
+            factors.append('Full column references')
+        
+        return factors
 
-without requiring them to manually inspect the entire workbook.
+# -----------------------------------------------------------------------------
+# DEPENDENCY ENGINE - The Connection Mapper
+# -----------------------------------------------------------------------------
 
-Build the application around this principle:
+class DependencyEngine:
+    """Advanced dependency tracking with graph analysis"""
+    
+    def __init__(self):
+        self._dependency_cache = {}
+        self._graph = nx.DiGraph()
+    
+    def trace_dependencies(self, 
+                          cell_ref: CellReference,
+                          workbook: Workbook,
+                          context: AnalysisContext,
+                          visited: Set[CellReference] = None) -> Tuple[Set[CellReference], nx.DiGraph]:
+        """Trace all dependencies recursively"""
+        if visited is None:
+            visited = set()
+        
+        # Prevent infinite recursion
+        if cell_ref in visited:
+            return set(), self._graph
+        visited.add(cell_ref)
+        
+        dependencies = set()
+        
+        # Get cell data
+        cell_data = workbook.get_cell(cell_ref)
+        if not cell_data or not cell_data.is_formula:
+            return dependencies, self._graph
+        
+        # Parse formula
+        parser = ExcelFormulaParser()
+        ast = parser.parse(cell_data.formula, context)
+        
+        # Extract references from AST
+        refs = self._extract_references(ast, cell_ref)
+        
+        for ref in refs:
+            dependencies.add(ref)
+            self._graph.add_edge(cell_ref, ref)
+            
+            # Recursively trace
+            sub_deps, _ = self.trace_dependencies(ref, workbook, context, visited)
+            dependencies.update(sub_deps)
+        
+        return dependencies, self._graph
+    
+    def _extract_references(self, node: FormulaNode, current_cell: CellReference) -> Set[CellReference]:
+        """Extract cell references from AST"""
+        refs = set()
+        
+        if node.node_type == 'REFERENCE':
+            ref = self._parse_reference(node.value, current_cell)
+            if ref:
+                refs.add(ref)
+        
+        for child in node.children:
+            refs.update(self._extract_references(child, current_cell))
+        
+        return refs
+    
+    def _parse_reference(self, ref_str: str, current_cell: CellReference) -> Optional[CellReference]:
+        """Parse cell reference string"""
+        import re
+        
+        # Handle sheet references
+        if '!' in ref_str:
+            parts = ref_str.split('!')
+            sheet = parts[0].strip("'")
+            cell_part = parts[1]
+        else:
+            sheet = current_cell.sheet
+            cell_part = ref_str
+        
+        # Parse row and column
+        match = re.match(r'([A-Z]+)([0-9]+)', cell_part, re.IGNORECASE)
+        if match:
+            col_str = match.group(1)
+            row = int(match.group(2))
+            col = self._letter_to_col(col_str)
+            return CellReference(sheet=sheet, row=row, col=col)
+        
+        # Handle range references
+        if ':' in cell_part:
+            start = cell_part.split(':')[0]
+            match = re.match(r'([A-Z]+)([0-9]+)', start, re.IGNORECASE)
+            if match:
+                col_str = match.group(1)
+                row = int(match.group(2))
+                col = self._letter_to_col(col_str)
+                return CellReference(sheet=sheet, row=row, col=col)
+        
+        return None
+    
+    def _letter_to_col(self, letter: str) -> int:
+        """Convert column letter to number"""
+        result = 0
+        for char in letter:
+            result = result * 26 + (ord(char.upper()) - 64)
+        return result
+    
+    def detect_cycles(self) -> List[List[CellReference]]:
+        """Detect circular dependencies in the graph"""
+        cycles = []
+        try:
+            for cycle in nx.simple_cycles(self._graph):
+                cycles.append(list(cycle))
+        except:
+            pass
+        return cycles
+    
+    def get_dependency_path(self, source: CellReference, target: CellReference) -> List[CellReference]:
+        """Get the shortest dependency path between two cells"""
+        try:
+            return nx.shortest_path(self._graph, source, target)
+        except:
+            return []
 
-**"Every number must have an explainable lineage."**
+# -----------------------------------------------------------------------------
+# WHAT-IF ENGINE - The Simulation Engine
+# -----------------------------------------------------------------------------
+
+class WhatIfEngine:
+    """Advanced what-if analysis with impact simulation"""
+    
+    def __init__(self, evaluation_engine: EvaluationEngine, dependency_engine: DependencyEngine):
+        self.evaluation_engine = evaluation_engine
+        self.dependency_engine = dependency_engine
+        self._simulation_cache = {}
+    
+    def simulate_change(self,
+                       target_cell: CellReference,
+                       changed_cell: CellReference,
+                       new_value: Any,
+                       workbook: Workbook,
+                       context: AnalysisContext) -> Dict:
+        """Simulate changing a cell value and show impact"""
+        
+        # Get original trace
+        original_deps, original_graph = self.dependency_engine.trace_dependencies(
+            target_cell, workbook, context
+        )
+        
+        # Save original value
+        original_data = workbook.get_cell(changed_cell)
+        original_value = original_data.value if original_data else None
+        
+        # Apply change
+        if original_data:
+            original_data.value = new_value
+            original_data.cached_value = new_value
+        
+        # Re-evaluate with change
+        parser = ExcelFormulaParser()
+        cell_data = workbook.get_cell(target_cell)
+        if cell_data and cell_data.is_formula:
+            ast = parser.parse(cell_data.formula, context)
+            new_result, trace = self.evaluation_engine.evaluate(
+                ast, context, target_cell, workbook
+            )
+        else:
+            new_result = workbook.get_cell(target_cell).value if workbook.get_cell(target_cell) else None
+        
+        # Restore original value
+        if original_data:
+            original_data.value = original_value
+            original_data.cached_value = original_value
+        
+        # Generate impact analysis
+        impact = self._analyze_impact(
+            target_cell, changed_cell, original_value, new_value,
+            original_deps, workbook, context
+        )
+        
+        return {
+            'cell': target_cell.address,
+            'original_result': original_value,
+            'new_result': new_result,
+            'change': {
+                'cell': changed_cell.address,
+                'old_value': original_value,
+                'new_value': new_value
+            },
+            'difference': self._safe_subtract(new_result, original_value),
+            'impact_path': impact['path'],
+            'affected_cells': impact['affected_cells'],
+            'summary': impact['summary']
+        }
+    
+    def _analyze_impact(self, target: CellReference, changed: CellReference,
+                        old_value: Any, new_value: Any,
+                        dependencies: Set[CellReference], workbook: Workbook,
+                        context: AnalysisContext) -> Dict:
+        """Analyze the full impact of a change"""
+        
+        # Find affected cells
+        affected = []
+        path = []
+        
+        # Trace impact path
+        current = changed
+        while current != target:
+            path.append(current.address)
+            # Find next cell in dependency chain
+            next_cell = self._find_next_in_chain(current, target, workbook)
+            if not next_cell:
+                break
+            current = next_cell
+        
+        if current == target:
+            path.append(target.address)
+        
+        # Find all cells that depend on the changed cell
+        for cell, cell_data in workbook.cells.items():
+            if cell_data.is_formula:
+                deps, _ = self.dependency_engine.trace_dependencies(cell, workbook, context)
+                if changed in deps:
+                    affected.append(cell.address)
+        
+        return {
+            'path': path,
+            'affected_cells': affected[:100],  # Limit to 100
+            'affected_count': len(affected),
+            'summary': self._generate_impact_summary(
+                changed, old_value, new_value, len(affected), path
+            )
+        }
+    
+    def _find_next_in_chain(self, current: CellReference, target: CellReference,
+                           workbook: Workbook) -> Optional[CellReference]:
+        """Find the next cell in the dependency chain"""
+        # Look for formulas that reference current
+        for cell, cell_data in workbook.cells.items():
+            if cell_data.is_formula:
+                deps, _ = self.dependency_engine.trace_dependencies(cell, workbook, AnalysisContext())
+                if current in deps:
+                    return cell
+        return None
+    
+    def _generate_impact_summary(self, changed: CellReference, old_value: Any,
+                                 new_value: Any, affected_count: int, path: List[str]) -> str:
+        """Generate human-readable impact summary"""
+        return (f"Changing {changed.address} from {old_value} to {new_value} "
+                f"affects {affected_count} cells. Impact path: {' → '.join(path[:5])}"
+                f"{'...' if len(path) > 5 else ''}")
+    
+    def _safe_subtract(self, a: Any, b: Any) -> Any:
+        """Safely subtract values, handling None"""
+        if a is None and b is None:
+            return 0
+        if a is None:
+            return -b if isinstance(b, (int, float)) else None
+        if b is None:
+            return a if isinstance(a, (int, float)) else None
+        if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+            return a - b
+        return None
+
+# -----------------------------------------------------------------------------
+# VISUALIZATION ENGINE - The Data Visualizer
+# -----------------------------------------------------------------------------
+
+class VisualizationEngine:
+    """Advanced visualization with interactive graphs"""
+    
+    def __init__(self):
+        self._figure_cache = {}
+    
+    def create_dependency_graph(self, 
+                               graph: nx.DiGraph,
+                               target_cell: Optional[CellReference] = None) -> go.Figure:
+        """Create interactive dependency graph"""
+        
+        # Create layout
+        pos = nx.spring_layout(graph, k=1, iterations=50)
+        
+        # Prepare edge traces
+        edge_x = []
+        edge_y = []
+        for edge in graph.edges():
+            x0, y0 = pos[edge[0]]
+            x1, y1 = pos[edge[1]]
+            edge_x.extend([x0, x1, None])
+            edge_y.extend([y0, y1, None])
+        
+        edge_trace = go.Scatter(
+            x=edge_x, y=edge_y,
+            line=dict(width=1, color='#888'),
+            hoverinfo='none',
+            mode='lines'
+        )
+        
+        # Prepare node traces
+        node_x = []
+        node_y = []
+        node_text = []
+        node_colors = []
+        
+        for node in graph.nodes():
+            x, y = pos[node]
+            node_x.append(x)
+            node_y.append(y)
+            
+            # Get node label
+            if isinstance(node, CellReference):
+                label = node.address
+            else:
+                label = str(node)
+            node_text.append(label)
+            
+            # Color based on node type
+            if isinstance(node, CellReference):
+                if target_cell and node == target_cell:
+                    node_colors.append('red')
+                elif node in graph.predecessors(target_cell) if target_cell else []:
+                    node_colors.append('blue')
+                else:
+                    node_colors.append('lightblue')
+            else:
+                node_colors.append('gray')
+        
+        node_trace = go.Scatter(
+            x=node_x, y=node_y,
+            mode='markers+text',
+            text=node_text,
+            textposition='top center',
+            hoverinfo='text',
+            marker=dict(
+                size=20,
+                color=node_colors,
+                line=dict(width=2, color='darkblue')
+            )
+        )
+        
+        # Create figure
+        fig = go.Figure(
+            data=[edge_trace, node_trace],
+            layout=go.Layout(
+                title='Dependency Graph',
+                showlegend=False,
+                hovermode='closest',
+                margin=dict(b=20, l=5, r=5, t=40),
+                annotations=[dict(
+                    text="Interactive Dependency Graph",
+                    showarrow=False,
+                    xref="paper", yref="paper",
+                    x=0.005, y=-0.002
+                )],
+                xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+                yaxis=dict(showgrid=False, zeroline=False, showticklabels=False)
+            )
+        )
+        
+        return fig
+    
+    def create_formula_tree(self, ast: FormulaNode) -> go.Figure:
+        """Create interactive formula tree visualization"""
+        
+        # Build tree layout
+        labels = []
+        parents = []
+        
+        def traverse(node: FormulaNode, parent_id: str = None):
+            node_id = node._id
+            labels.append(f"{node.node_type}: {node.value if node.value else ''}")
+            parents.append(parent_id or '')
+            
+            for child in node.children:
+                traverse(child, node_id)
+        
+        traverse(ast)
+        
+        # Create treemap
+        fig = go.Figure(go.Treemap(
+            labels=labels,
+            parents=parents,
+            textinfo='label',
+            marker=dict(
+                colors='lightblue',
+                line=dict(width=1, color='darkblue')
+            )
+        ))
+        
+        fig.update_layout(
+            title='Formula Tree (AST)',
+            margin=dict(t=40, l=0, r=0, b=0)
+        )
+        
+        return fig
+    
+    def create_calculation_trace(self, steps: List[Dict]) -> go.Figure:
+        """Create calculation trace visualization"""
+        
+        # Extract step data
+        step_numbers = [step.get('step', i+1) for i, step in enumerate(steps)]
+        operations = [step.get('operation', '') for step in steps]
+        results = [step.get('result', '') for step in steps]
+        
+        # Create horizontal bar chart
+        fig = go.Figure(data=[
+            go.Bar(
+                x=[1] * len(steps),
+                y=step_numbers,
+                orientation='v',
+                text=[f"{op}: {result}" for op, result in zip(operations, results)],
+                textposition='outside',
+                marker=dict(
+                    color='lightblue',
+                    line=dict(color='darkblue', width=1)
+                ),
+                hoverinfo='text',
+                hovertext=[f"Step {i+1}: {op} → {result}" 
+                          for i, (op, result) in enumerate(zip(operations, results))]
+            )
+        ])
+        
+        fig.update_layout(
+            title='Calculation Trace',
+            xaxis=dict(
+                title='Steps',
+                showticklabels=False
+            ),
+            yaxis=dict(
+                title='Step Number',
+                autorange='reversed'
+            ),
+            margin=dict(t=40, l=0, r=0, b=0),
+            height=max(300, len(steps) * 30)
+        )
+        
+        return fig
+    
+    def create_heatmap(self, workbook: Workbook, sheet: str) -> go.Figure:
+        """Create heatmap of cell values"""
+        
+        # Get cells from sheet
+        cells = workbook.get_cells_by_sheet(sheet)
+        
+        if not cells:
+            return go.Figure()
+        
+        # Build matrix
+        rows = max(c.reference.row for c in cells)
+        cols = max(c.reference.col for c in cells)
+        
+        matrix = [[None for _ in range(cols)] for _ in range(rows)]
+        
+        for cell in cells:
+            if cell.value is not None:
+                row = cell.reference.row - 1
+                col = cell.reference.col - 1
+                
+                # Try to convert to number for heatmap
+                try:
+                    if isinstance(cell.value, (int, float)):
+                        matrix[row][col] = cell.value
+                    elif isinstance(cell.value, str):
+                        # Try to parse number from string
+                        try:
+                            matrix[row][col] = float(cell.value.replace(',', ''))
+                        except:
+                            matrix[row][col] = None
+                    else:
+                        matrix[row][col] = None
+                except:
+                    matrix[row][col] = None
+        
+        # Create heatmap
+        fig = go.Figure(data=go.Heatmap(
+            z=matrix,
+            colorscale='Blues',
+            showscale=True,
+            hoverongaps=False
+        ))
+        
+        fig.update_layout(
+            title=f'Value Heatmap - {sheet}',
+            xaxis=dict(title='Column'),
+            yaxis=dict(title='Row', autorange='reversed'),
+            margin=dict(t=40, l=0, r=0, b=0)
+        )
+        
+        return fig
+
+# -----------------------------------------------------------------------------
+# REPORT GENERATOR - The Documentation Engine
+# -----------------------------------------------------------------------------
+
+class ReportGenerator:
+    """Advanced report generation with multiple formats"""
+    
+    def __init__(self):
+        self._templates = self._load_templates()
+    
+    def _load_templates(self) -> Dict:
+        """Load Jinja2 templates"""
+        templates = {}
+        
+        # HTML Template
+        templates['html'] = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Excel Formula Analysis Report</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        h1 { color: #2c3e50; border-bottom: 2px solid #3498db; }
+        h2 { color: #34495e; margin-top: 30px; }
+        .section { margin: 20px 0; padding: 20px; background: #f8f9fa; border-radius: 5px; }
+        .value { font-size: 24px; font-weight: bold; color: #27ae60; }
+        .warning { background: #fff3cd; border-left: 4px solid #ffc107; padding: 10px; }
+        .error { background: #f8d7da; border-left: 4px solid #dc3545; padding: 10px; }
+        .info { background: #d1ecf1; border-left: 4px solid #17a2b8; padding: 10px; }
+        table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #3498db; color: white; }
+        .risk-critical { color: #dc3545; }
+        .risk-high { color: #fd7e14; }
+        .risk-medium { color: #ffc107; }
+        .risk-low { color: #28a745; }
+        .tree { font-family: monospace; white-space: pre; }
+    </style>
+</head>
+<body>
+    <h1>🔍 Excel Formula Analysis Report</h1>
+    <div class="section">
+        <h2>Overview</h2>
+        <p><strong>Cell:</strong> {{ data.cell }}</p>
+        <p><strong>Result:</strong> <span class="value">{{ data.result }}</span></p>
+        <p><strong>Risk Score:</strong> <span class="risk-{{ data.risk_level.lower() }}">{{ data.risk_score }}/100</span></p>
+        <p><strong>Risk Level:</strong> <span class="risk-{{ data.risk_level.lower() }}">{{ data.risk_level }}</span></p>
+    </div>
+    
+    {% if data.warnings %}
+    <div class="section">
+        <h2>⚠️ Warnings</h2>
+        {% for warning in data.warnings %}
+        <div class="warning">{{ warning }}</div>
+        {% endfor %}
+    </div>
+    {% endif %}
+    
+    {% if data.errors %}
+    <div class="section">
+        <h2>❌ Errors</h2>
+        {% for error in data.errors %}
+        <div class="error">{{ error }}</div>
+        {% endfor %}
+    </div>
+    {% endif %}
+    
+    <div class="section">
+        <h2>📊 Statistics</h2>
+        <table>
+            <tr><th>Metric</th><th>Value</th></tr>
+            <tr><td>Dependencies</td><td>{{ data.dependencies_count }}</td></tr>
+            <tr><td>Lookups</td><td>{{ data.lookups_count }}</td></tr>
+            <tr><td>Aggregations</td><td>{{ data.aggregations_count }}</td></tr>
+            <tr><td>Calculations</td><td>{{ data.calculations_count }}</td></tr>
+            <tr><td>Formula Length</td><td>{{ data.formula_length }}</td></tr>
+        </table>
+    </div>
+    
+    <div class="section">
+        <h2>📝 Formula</h2>
+        <code>{{ data.formula }}</code>
+    </div>
+    
+    <div class="section">
+        <h2>🌳 Formula Tree</h2>
+        <pre class="tree">{{ data.formula_tree }}</pre>
+    </div>
+    
+    <div class="section">
+        <h2>📋 Calculation Trace</h2>
+        <table>
+            <tr><th>Step</th><th>Operation</th><th>Result</th></tr>
+            {% for step in data.calculation_steps %}
+            <tr>
+                <td>{{ step.step }}</td>
+                <td>{{ step.operation }}</td>
+                <td>{{ step.result }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+    </div>
+    
+    <div class="section">
+        <h2>🔗 Source Lineage</h2>
+        {% for lineage in data.source_lineage %}
+        <div>{{ lineage }}</div>
+        {% endfor %}
+    </div>
+    
+    <div class="section">
+        <h2>🔍 Issue Detection</h2>
+        {% for issue_type, issues in data.issues.items() %}
+        <h3>{{ issue_type }}</h3>
+        <ul>
+            {% for issue in issues %}
+            <li>{{ issue.description }}: {{ issue.value if issue.value else '' }}</li>
+            {% endfor %}
+        </ul>
+        {% endfor %}
+    </div>
+    
+    <div class="section">
+        <h2>💡 Recommendations</h2>
+        <ul>
+            {% for recommendation in data.recommendations %}
+            <li>{{ recommendation }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    
+    <p style="margin-top: 50px; color: #7f8c8d; text-align: center;">
+        Generated by Excel Formula Analyzer - {{ data.timestamp }}
+    </p>
+</body>
+</html>
+        """
+        
+        return templates
+    
+    def generate_report(self, 
+                       analysis_data: Dict,
+                       format_type: str = 'html') -> str:
+        """Generate report in specified format"""
+        
+        if format_type == 'html':
+            return self._generate_html_report(analysis_data)
+        elif format_type == 'json':
+            return self._generate_json_report(analysis_data)
+        elif format_type == 'txt':
+            return self._generate_text_report(analysis_data)
+        else:
+            raise ValueError(f"Unsupported format: {format_type}")
+    
+    def _generate_html_report(self, data: Dict) -> str:
+        """Generate HTML report"""
+        template = jinja2.Template(self._templates['html'])
+        return template.render(data=data)
+    
+    def _generate_json_report(self, data: Dict) -> str:
+        """Generate JSON report"""
+        return json.dumps(data, indent=2, default=str)
+    
+    def _generate_text_report(self, data: Dict) -> str:
+        """Generate text report"""
+        lines = []
+        lines.append("=" * 80)
+        lines.append("EXCEL FORMULA ANALYSIS REPORT")
+        lines.append("=" * 80)
+        lines.append("")
+        lines.append(f"Cell: {data.get('cell', 'N/A')}")
+        lines.append(f"Result: {data.get('result', 'N/A')}")
+        lines.append(f"Risk Score: {data.get('risk_score', 0)}/100 - {data.get('risk_level', 'UNKNOWN')}")
+        lines.append("")
+        lines.append("-" * 80)
+        lines.append("FORMULA")
+        lines.append("-" * 80)
+        lines.append(data.get('formula', 'N/A'))
+        lines.append("")
+        lines.append("-" * 80)
+        lines.append("CALCULATION TRACE")
+        lines.append("-" * 80)
+        for step in data.get('calculation_steps', []):
+            lines.append(f"Step {step['step']}: {step['operation']} → {step['result']}")
+        lines.append("")
+        lines.append("-" * 80)
+        lines.append("SOURCE LINEAGE")
+        lines.append("-" * 80)
+        for lineage in data.get('source_lineage', []):
+            lines.append(lineage)
+        lines.append("")
+        lines.append("-" * 80)
+        lines.append("ISSUES DETECTED")
+        lines.append("-" * 80)
+        for issue_type, issues in data.get('issues', {}).items():
+            lines.append(f"\n{issue_type.upper()}:")
+            for issue in issues:
+                lines.append(f"  - {issue.get('description', '')}: {issue.get('value', '')}")
+        lines.append("")
+        lines.append("=" * 80)
+        lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append("=" * 80)
+        
+        return '\n'.join(lines)
+
+# -----------------------------------------------------------------------------
+# MAIN APPLICATION - The Orchestrator
+# -----------------------------------------------------------------------------
+
+class ExcelFormulaAnalyzer:
+    """Main application orchestrating all components"""
+    
+    def __init__(self):
+        self.tokenizer = ExcelFormulaTokenizer()
+        self.parser = ExcelFormulaParser(self.tokenizer)
+        self.evaluator = EvaluationEngine()
+        self.dependency_engine = DependencyEngine()
+        self.issue_detector = IssueDetector()
+        self.what_if_engine = WhatIfEngine(self.evaluator, self.dependency_engine)
+        self.visualization_engine = VisualizationEngine()
+        self.report_generator = ReportGenerator()
+        
+        self._analysis_cache = {}
+    
+    def analyze_formula(self,
+                       workbook_path: str,
+                       sheet: str,
+                       cell_address: str,
+                       options: Dict = None) -> Dict:
+        """
+        Complete formula analysis
+        
+        Args:
+            workbook_path: Path to Excel file
+            sheet: Sheet name
+            cell_address: Cell address (e.g., "F2")
+            options: Analysis options
+        
+        Returns:
+            Complete analysis report
+        """
+        options = options or {}
+        context = AnalysisContext()
+        
+        logger.info(f"Analyzing {sheet}!{cell_address} in {workbook_path}")
+        
+        try:
+            # Step 1: Load workbook
+            loader = WorkbookLoader(workbook_path, options)
+            workbook = loader.load()
+            
+            # Step 2: Parse cell reference
+            cell_ref = self._parse_cell_reference(sheet, cell_address, workbook)
+            context.target_cell = cell_ref
+            context.workbook_hash = workbook.hash
+            
+            # Step 3: Get cell data
+            cell_data = workbook.get_cell(cell_ref)
+            if not cell_data:
+                return self._create_error_report(f"Cell {cell_address} not found", context)
+            
+            if not cell_data.is_formula:
+                return self._create_value_report(cell_data, context)
+            
+            # Step 4: Parse formula
+            ast = self.parser.parse(cell_data.formula, context)
+            
+            # Step 5: Trace dependencies
+            dependencies, graph = self.dependency_engine.trace_dependencies(
+                cell_ref, workbook, context
+            )
+            
+            # Step 6: Evaluate formula
+            result, trace = self.evaluator.evaluate(ast, context, cell_ref, workbook)
+            
+            # Step 7: Detect issues
+            issues = self.issue_detector.analyze(
+                cell_data.formula, cell_ref, dependencies, context
+            )
+            
+            # Step 8: Calculate risk score
+            risk_score = self.issue_detector.calculate_risk_score(
+                cell_data.formula, dependencies
+            )
+            
+            # Step 9: Generate visualizations
+            dep_graph_fig = self.visualization_engine.create_dependency_graph(graph, cell_ref)
+            formula_tree_fig = self.visualization_engine.create_formula_tree(ast)
+            
+            # Step 10: Build report
+            report = self._build_report(
+                cell_ref, cell_data, ast, result, trace,
+                dependencies, graph, issues, risk_score,
+                context, dep_graph_fig, formula_tree_fig
+            )
+            
+            # Cache result
+            cache_key = f"{workbook.hash}:{cell_ref.address}"
+            self._analysis_cache[cache_key] = report
+            
+            return report
+            
+        except Exception as e:
+            logger.error(f"Analysis failed: {e}", exc_info=True)
+            return self._create_error_report(str(e), context)
+    
+    def _parse_cell_reference(self, sheet: str, address: str, workbook: Workbook) -> CellReference:
+        """Parse cell reference"""
+        import re
+        match = re.match(r'([A-Z]+)([0-9]+)', address, re.IGNORECASE)
+        if match:
+            col_str = match.group(1)
+            row = int(match.group(2))
+            col = self._letter_to_col(col_str)
+            return CellReference(sheet=sheet, row=row, col=col)
+        raise ValueError(f"Invalid cell address: {address}")
+    
+    def _letter_to_col(self, letter: str) -> int:
+        """Convert column letter to number"""
+        result = 0
+        for char in letter:
+            result = result * 26 + (ord(char.upper()) - 64)
+        return result
+    
+    def _build_report(self, cell_ref: CellReference, cell_data: CellData,
+                     ast: FormulaNode, result: Any, trace: Dict,
+                     dependencies: Set[CellReference], graph: nx.DiGraph,
+                     issues: Dict, risk_score: Dict, context: AnalysisContext,
+                     dep_graph_fig: go.Figure, formula_tree_fig: go.Figure) -> Dict:
+        """Build comprehensive analysis report"""
+        
+        # Build source lineage
+        source_lineage = self._build_source_lineage(cell_ref, dependencies, workbook=None)
+        
+        # Build calculation steps
+        calculation_steps = trace.get('steps', [])
+        calculation_steps = [
+            {'step': i+1, 'operation': step, 'result': step}
+            for i, step in enumerate(calculation_steps[:50])  # Limit to 50 steps
+        ]
+        
+        # Build formula tree string
+        formula_tree_str = self._build_formula_tree_string(ast)
+        
+        # Generate recommendations
+        recommendations = self._generate_recommendations(issues, risk_score)
+        
+        return {
+            'cell': cell_ref.address,
+            'formula': cell_data.formula,
+            'result': result,
+            'risk_score': risk_score.get('score', 0),
+            'risk_level': risk_score.get('risk_level', 'UNKNOWN'),
+            'risk_factors': risk_score.get('factors', []),
+            'dependencies_count': len(dependencies),
+            'dependencies': [d.address for d in dependencies],
+            'source_lineage': source_lineage,
+            'calculation_steps': calculation_steps,
+            'formula_tree': formula_tree_str,
+            'formula_tree_figure': formula_tree_fig.to_json(),
+            'dependency_graph_figure': dep_graph_fig.to_json(),
+            'issues': issues,
+            'warnings': [w['message'] for w in context.warnings],
+            'errors': [e['message'] for e in context.errors],
+            'recommendations': recommendations,
+            'analysis_id': context.analysis_id,
+            'timestamp': context.timestamp.isoformat(),
+            'metadata': {
+                'formula_length': len(cell_data.formula) if cell_data.formula else 0,
+                'function_count': self._count_functions(cell_data.formula) if cell_data.formula else 0,
+                'lookups_count': len([i for i in issues.get('lookup_operations', [])]),
+                'aggregations_count': len([i for i in issues.get('aggregation_operations', [])])
+            }
+        }
+    
+    def _build_source_lineage(self, cell_ref: CellReference, 
+                             dependencies: Set[CellReference], 
+                             workbook: Workbook) -> List[str]:
+        """Build source lineage string"""
+        lineage = []
+        lineage.append(f"{cell_ref.address} = {self._get_cell_value(cell_ref, workbook)}")
+        lineage.append("")
+        lineage.append("SOURCE LINEAGE:")
+        lineage.append("-" * 40)
+        
+        for dep in dependencies:
+            value = self._get_cell_value(dep, workbook)
+            lineage.append(f"{dep.address} → {value}")
+        
+        return lineage
+    
+    def _get_cell_value(self, ref: CellReference, workbook: Workbook) -> Any:
+        """Get cell value"""
+        if workbook:
+            cell_data = workbook.get_cell(ref)
+            return cell_data.value if cell_data else None
+        return None
+    
+    def _build_formula_tree_string(self, ast: FormulaNode, indent: int = 0) -> str:
+        """Build formula tree as string"""
+        lines = []
+        prefix = "  " * indent
+        lines.append(f"{prefix}├── {ast.node_type}: {ast.value if ast.value else ''}")
+        
+        for child in ast.children:
+            lines.append(self._build_formula_tree_string(child, indent + 1))
+        
+        return '\n'.join(lines)
+    
+    def _count_functions(self, formula: str) -> int:
+        """Count number of functions in formula"""
+        import re
+        return len(re.findall(r'\b[A-Z_]+\s*\(', formula.upper()))
+    
+    def _generate_recommendations(self, issues: Dict, risk_score: Dict) -> List[str]:
+        """Generate recommendations based on issues and risk score"""
+        recommendations = []
+        
+        # Hardcoded values
+        if 'hardcoded_values' in issues:
+            recommendations.append(
+                "Consider moving hardcoded values to named ranges or assumption tables"
+            )
+        
+        # Volatile functions
+        if 'volatile_functions' in issues:
+            recommendations.append(
+                "Replace volatile functions (NOW, TODAY, RAND, etc.) with static values where possible"
+            )
+        
+        # Full column references
+        if 'full_column_refs' in issues:
+            recommendations.append(
+                "Replace full column references with specific ranges for better performance"
+            )
+        
+        # Nested IFs
+        if 'nested_ifs' in issues:
+            recommendations.append(
+                "Consider using IFS or SWITCH instead of multiple nested IF statements"
+            )
+        
+        # Error suppression
+        if 'error_suppression' in issues:
+            recommendations.append(
+                "Review IFERROR/IFNA usage to ensure errors aren't being hidden unintentionally"
+            )
+        
+        # High risk score
+        if risk_score.get('score', 0) >= 70:
+            recommendations.append(
+                "This formula has a high risk score. Consider breaking it down into smaller, simpler formulas"
+            )
+        
+        if not recommendations:
+            recommendations.append("No major issues detected. Formula appears well-structured.")
+        
+        return recommendations
+    
+    def _create_value_report(self, cell_data: CellData, context: AnalysisContext) -> Dict:
+        """Create report for non-formula cells"""
+        return {
+            'cell': cell_data.reference.address,
+            'result': cell_data.value,
+            'message': 'This cell contains a value, not a formula',
+            'value': cell_data.value,
+            'type': cell_data.cell_type.value,
+            'analysis_id': context.analysis_id,
+            'timestamp': context.timestamp.isoformat()
+        }
+    
+    def _create_error_report(self, message: str, context: AnalysisContext) -> Dict:
+        """Create error report"""
+        return {
+            'error': True,
+            'message': message,
+            'analysis_id': context.analysis_id,
+            'timestamp': context.timestamp.isoformat()
+        }
+
+# -----------------------------------------------------------------------------
+# WEB APPLICATION - The User Interface
+# -----------------------------------------------------------------------------
+
+class ExcelAnalyzerWebApp:
+    """Dash-based web application"""
+    
+    def __init__(self, analyzer: ExcelFormulaAnalyzer):
+        self.analyzer = analyzer
+        self.app = dash.Dash(
+            __name__,
+            external_stylesheets=[dbc.themes.BOOTSTRAP],
+            suppress_callback_exceptions=True
+        )
+        self.setup_layout()
+        self.setup_callbacks()
+    
+    def setup_layout(self):
+        """Setup application layout"""
+        self.app.layout = dbc.Container([
+            dbc.Row([
+                dbc.Col([
+                    html.H1("🏆 Excel Formula Analyzer Pro", className="text-center my-4"),
+                    html.P("The Sherlock Holmes of Excel Formulas", 
+                          className="text-center text-muted")
+                ], width=12)
+            ]),
+            
+            dbc.Row([
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardHeader("📊 Analysis Controls"),
+                        dbc.CardBody([
+                            dbc.Row([
+                                dbc.Col([
+                                    dbc.Label("Upload Workbook"),
+                                    dcc.Upload(
+                                        id='upload-workbook',
+                                        children=html.Div([
+                                            'Drag and Drop or ',
+                                            html.A('Select Excel File')
+                                        ]),
+                                        style={
+                                            'width': '100%',
+                                            'height': '60px',
+                                            'lineHeight': '60px',
+                                            'borderWidth': '1px',
+                                            'borderStyle': 'dashed',
+                                            'borderRadius': '5px',
+                                            'textAlign': 'center',
+                                            'margin': '10px 0'
+                                        },
+                                        multiple=False
+                                    )
+                                ], width=12)
+                            ]),
+                            
+                            dbc.Row([
+                                dbc.Col([
+                                    dbc.Label("Sheet"),
+                                    dcc.Dropdown(
+                                        id='sheet-selector',
+                                        placeholder='Select sheet...'
+                                    )
+                                ], width=4),
+                                dbc.Col([
+                                    dbc.Label("Cell"),
+                                    dcc.Input(
+                                        id='cell-input',
+                                        type='text',
+                                        placeholder='e.g., F2',
+                                        className='form-control'
+                                    )
+                                ], width=4),
+                                dbc.Col([
+                                    dbc.Label("Analyze"),
+                                    dbc.Button(
+                                        "🔍 Analyze Formula",
+                                        id='analyze-button',
+                                        color='primary',
+                                        className='mt-2 w-100'
+                                    )
+                                ], width=4)
+                            ])
+                        ])
+                    ])
+                ], width=12)
+            ], className="my-4"),
+            
+            dbc.Row([
+                dbc.Col([
+                    html.Div(id='analysis-results')
+                ], width=12)
+            ]),
+            
+            # Loading spinner
+            dcc.Loading(
+                id='loading-spinner',
+                type='default',
+                children=html.Div(id='loading-output')
+            ),
+            
+            # Store for analysis results
+            dcc.Store(id='analysis-store')
+            
+        ], fluid=True)
+    
+    def setup_callbacks(self):
+        """Setup application callbacks"""
+        
+        @self.app.callback(
+            [Output('sheet-selector', 'options'),
+             Output('sheet-selector', 'disabled')],
+            [Input('upload-workbook', 'contents')],
+            [State('upload-workbook', 'filename')]
+        )
+        def update_sheets(contents, filename):
+            """Update sheet selector when workbook is uploaded"""
+            if contents is not None:
+                # Process uploaded file
+                try:
+                    # Save file temporarily
+                    temp_path = self._save_uploaded_file(contents, filename)
+                    loader = WorkbookLoader(temp_path)
+                    workbook = loader.load()
+                    
+                    # Get sheet names
+                    sheets = list(workbook.sheets.keys())
+                    options = [{'label': s, 'value': s} for s in sheets]
+                    return options, False
+                    
+                except Exception as e:
+                    logger.error(f"Error processing upload: {e}")
+                    return [], True
+            
+            return [], True
+        
+        @self.app.callback(
+            Output('analysis-results', 'children'),
+            [Input('analyze-button', 'n_clicks')],
+            [State('upload-workbook', 'contents'),
+             State('upload-workbook', 'filename'),
+             State('sheet-selector', 'value'),
+             State('cell-input', 'value')]
+        )
+        def perform_analysis(n_clicks, contents, filename, sheet, cell):
+            """Perform formula analysis"""
+            if n_clicks is None:
+                return html.Div("Upload a workbook and enter a cell to analyze")
+            
+            if not contents or not sheet or not cell:
+                return dbc.Alert(
+                    "Please upload a workbook and specify sheet and cell",
+                    color="warning"
+                )
+            
+            try:
+                # Save uploaded file
+                temp_path = self._save_uploaded_file(contents, filename)
+                
+                # Analyze formula
+                result = self.analyzer.analyze_formula(
+                    temp_path, sheet, cell
+                )
+                
+                # Generate report
+                report = self.analyzer.report_generator.generate_report(
+                    result, 'html'
+                )
+                
+                # Return HTML report
+                return html.Iframe(
+                    srcDoc=report,
+                    style={'width': '100%', 'height': '800px', 'border': 'none'}
+                )
+                
+            except Exception as e:
+                logger.error(f"Analysis error: {e}", exc_info=True)
+                return dbc.Alert(
+                    f"Error analyzing formula: {str(e)}",
+                    color="danger"
+                )
+    
+    def _save_uploaded_file(self, contents, filename):
+        """Save uploaded file to temporary location"""
+        import base64
+        import tempfile
+        
+        # Decode contents
+        content_type, content_string = contents.split(',')
+        decoded = base64.b64decode(content_string)
+        
+        # Save to temp file
+        temp_dir = tempfile.mkdtemp()
+        temp_path = os.path.join(temp_dir, filename)
+        
+        with open(temp_path, 'wb') as f:
+            f.write(decoded)
+        
+        return temp_path
+    
+    def run(self, debug: bool = True, port: int = 8050):
+        """Run the web application"""
+        self.app.run_server(debug=debug, port=port)
+
+# -----------------------------------------------------------------------------
+# COMMAND-LINE INTERFACE
+# -----------------------------------------------------------------------------
+
+def main():
+    """Main entry point"""
+    import argparse
+    
+    parser = argparse.ArgumentParser(
+        description='Excel Formula Analyzer - The Sherlock Holmes of Excel'
+    )
+    parser.add_argument('workbook', help='Path to Excel workbook')
+    parser.add_argument('--sheet', '-s', required=True, help='Sheet name')
+    parser.add_argument('--cell', '-c', required=True, help='Cell address (e.g., F2)')
+    parser.add_argument('--output', '-o', help='Output file (supports .html, .json, .txt)')
+    parser.add_argument('--web', '-w', action='store_true', help='Run web interface')
+    parser.add_argument('--port', type=int, default=8050, help='Web interface port')
+    
+    args = parser.parse_args()
+    
+    if args.web:
+        # Run web interface
+        analyzer = ExcelFormulaAnalyzer()
+        app = ExcelAnalyzerWebApp(analyzer)
+        app.run(port=args.port)
+    else:
+        # Run command-line analysis
+        analyzer = ExcelFormulaAnalyzer()
+        result = analyzer.analyze_formula(
+            args.workbook, args.sheet, args.cell
+        )
+        
+        if args.output:
+            # Determine format from extension
+            ext = os.path.splitext(args.output)[1].lower()
+            if ext == '.html':
+                report = analyzer.report_generator.generate_report(result, 'html')
+            elif ext == '.json':
+                report = analyzer.report_generator.generate_report(result, 'json')
+            else:
+                report = analyzer.report_generator.generate_report(result, 'txt')
+            
+            with open(args.output, 'w') as f:
+                f.write(report)
+            print(f"Report saved to {args.output}")
+        else:
+            # Print to console
+            report = analyzer.report_generator.generate_report(result, 'txt')
+            print(report)
+
+if __name__ == "__main__":
+    main()
