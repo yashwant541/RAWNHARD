@@ -299,8 +299,9 @@
   }
 
   // ---- step 4: outputs
+  let TEMPLATE_XLSX = [];
   async function refreshOutputs() {
-    OUTPUT_XLSX = [];
+    OUTPUT_XLSX = []; TEMPLATE_XLSX = [];
     for (const which of ["output", "template"]) {
       const tb = $(`#${which}-table tbody`); tb.innerHTML = "";
       try {
@@ -308,12 +309,14 @@
         const files = D(r).files || [];
         if (!files.length) { tb.innerHTML = "<tr><td colspan='2' class='muted'>Empty.</td></tr>"; continue; }
         files.forEach((f) => {
-          if (which === "output" && f.extension === ".xlsx") OUTPUT_XLSX.push(f);
+          const traceable = [".xlsx", ".xlsm"].indexOf(f.extension) >= 0 && !/_COMPARISON_/i.test(f.filename);
+          if (traceable && which === "output") OUTPUT_XLSX.push(f);
+          if (traceable && which === "template") TEMPLATE_XLSX.push(f);
           tb.appendChild(el("tr", {}, [
             el("td", { text: f.filename }),
             el("td", {}, [
               el("button", { class: "icon-btn dl", title: "Download", text: "↓", onclick: () => dl(which, f.path) }),
-              f.extension === ".xlsx" ? el("button", { class: "icon-btn", title: "Trace", text: "🔬", onclick: () => go(`#/c/${encodeURIComponent(CUR.key)}/trace?file=${encodeURIComponent(f.path)}`) }) : null,
+              traceable ? el("button", { class: "icon-btn", title: "Trace", text: "🔬", onclick: () => go(`#/c/${encodeURIComponent(CUR.key)}/trace?folder=${which}&file=${encodeURIComponent(f.path)}`) }) : null,
               el("button", { class: "icon-btn", title: "Delete", text: "✕", onclick: () => delFile(which, f.path, f.filename) }),
             ]),
           ]));
@@ -321,17 +324,22 @@
       } catch (e) { tb.innerHTML = "<tr><td colspan='2' class='errbox'>" + e.message + "</td></tr>"; }
     }
   }
+  // the trace needs the formula-bearing workbooks -> prefer template, fall back to output
+  const traceFiles = () => OUTPUT_XLSX.length ? { which: "output", files: OUTPUT_XLSX } : { which: "template", files: TEMPLATE_XLSX };
 
   // ---- step 5: compare
   let CMP_COLS = [];
+  let CMP_SOURCE = "output";
   async function renderCompare() {
-    const box = $("#cmp-rows"); box.innerHTML = "<p class='muted'>Loading output schema…</p>";
+    const box = $("#cmp-rows"); box.innerHTML = "<p class='muted'>Loading column schema…</p>";
     try {
       const r = await call(`/api/output-schema?category=${encodeURIComponent(CUR.key)}`);
       CMP_COLS = D(r).columns || [];
+      CMP_SOURCE = D(r).source_folder || "output";
     } catch (e) { CMP_COLS = []; }
     box.innerHTML = "";
-    if (!CMP_COLS.length) { box.innerHTML = "<div class='warnbox'>No output files yet — run the calculation first.</div>"; return; }
+    if (!CMP_COLS.length) { box.innerHTML = "<div class='warnbox'>No produced workbooks yet — run the calculation first.</div>"; return; }
+    box.appendChild(el("p", { class: "muted small", text: `Comparing the workbooks in the ${CMP_SOURCE} folder — every formula column is evaluated, so a mismatched row can be walked in Trace.` }));
     if (!CMP_CONFIG.rows.length) CMP_CONFIG.rows = [{ left: "", right: "", type: "numeric" }];
     CMP_CONFIG.rows.forEach((rule, i) => box.appendChild(cmpRow(rule, i)));
   }
@@ -363,7 +371,9 @@
       } });
       const s = D(r);
       box.innerHTML = "";
+      (s.warnings || []).forEach((w) => box.appendChild(el("div", { class: "warnbox", text: "⚠ " + w })));
       box.appendChild(el("dl", { class: "kv" }, [
+        el("dt", { text: "Compared from" }), el("dd", { text: (s.source_folder || "template") + " folder" }),
         el("dt", { text: "Files compared" }), el("dd", { text: s.files_compared }),
         el("dt", { text: "Rows" }), el("dd", { text: s.total_rows }),
         el("dt", { text: "Matched" }), el("dd", { text: s.matched_rows }),
@@ -372,10 +382,11 @@
       ]));
       box.appendChild(el("div", { class: "row-actions", style: "justify-content:flex-start" }, [
         el("button", { class: "btn ghost small", text: "Download " + s.comparison_file, onclick: () => dl("output", "/" + s.comparison_file) }),
-        el("button", { class: "btn small", text: "Trace mismatched rows →", onclick: () => {
-          const first = OUTPUT_XLSX[0];
-          if (!first) { setStep(4); return toast("No .xlsx output to trace", "err"); }
-          go(`#/c/${encodeURIComponent(CUR.key)}/trace?file=${encodeURIComponent(first.path)}`);
+        el("button", { class: "btn small", text: "Trace mismatched rows →", onclick: async () => {
+          let tf = traceFiles();
+          if (!tf.files.length) { await refreshOutputs(); tf = traceFiles(); }
+          if (!tf.files.length) { setStep(4); return toast("No formula workbook to trace — run the calculation first", "err"); }
+          go(`#/c/${encodeURIComponent(CUR.key)}/trace?folder=${tf.which}&file=${encodeURIComponent(tf.files[0].path)}`);
         } }),
       ]));
       CMP_CONFIG.lastRules = rules;
@@ -383,19 +394,21 @@
   }
 
   // ---- step 6: trace launcher
-  function renderTraceLauncher() {
+  function fillTraceSelect() {
     const sel = $("#trace-file"); sel.innerHTML = "";
-    (OUTPUT_XLSX.length ? OUTPUT_XLSX : []).forEach((f) => sel.appendChild(el("option", { value: f.path, text: f.filename })));
-    if (!OUTPUT_XLSX.length) {
-      refreshOutputs().then(() => {
-        OUTPUT_XLSX.forEach((f) => sel.appendChild(el("option", { value: f.path, text: f.filename })));
-        if (!OUTPUT_XLSX.length) sel.appendChild(el("option", { value: "", text: "no .xlsx outputs — run the calculation first" }));
-      });
-    }
+    const tf = traceFiles();
+    tf.files.forEach((f) => sel.appendChild(el("option", { value: tf.which + "|" + f.path, text: f.filename })));
+    if (!tf.files.length) sel.appendChild(el("option", { value: "", text: "no formula workbooks — run the calculation first" }));
+  }
+  function renderTraceLauncher() {
+    fillTraceSelect();
+    if (!traceFiles().files.length) refreshOutputs().then(fillTraceSelect);
+    const sel = $("#trace-file");
     $("#trace-open").onclick = () => {
-      const p = sel.value;
-      if (!p) return toast("No output file to trace", "err");
-      go(`#/c/${encodeURIComponent(CUR.key)}/trace?file=${encodeURIComponent(p)}`);
+      const v = sel.value;
+      if (!v) return toast("No workbook to trace", "err");
+      const [which, p] = v.split("|");
+      go(`#/c/${encodeURIComponent(CUR.key)}/trace?folder=${which}&file=${encodeURIComponent(p)}`);
     };
   }
 
@@ -414,13 +427,24 @@
     $("#tr-journey").innerHTML = "";
     $("#tr-findings").innerHTML = ""; $("#tr-mismatch-list").innerHTML = "";
     try {
-      const r = await call("/excel-trace/open-output", { method: "POST", json: { category: key, path: q.file } });
-      TRACE = { sid: r.session_id, file: r.filename, category: key, summary: r.summary };
+      const r = await call("/excel-trace/open-output", { method: "POST", json: {
+        category: key, path: q.file, folder_type: q.folder || "output" } });
+      TRACE = { sid: r.session_id, file: r.filename, category: key, folder: q.folder || "output", summary: r.summary };
       const s = r.summary;
       $("#trace-sub").textContent = r.filename;
-      $("#tr-summary").textContent =
-        `${s.total_formula_cells} formula cells · ${s.sheet_names.length} sheet(s) · `
-        + `${s.conditional_cells} conditional · ${s.lookup_cells} lookup · ${s.findings.total} finding(s)`;
+      if (!s.engine_build) {
+        $("#tr-summary").innerHTML = "<span class='errbox'>An old <code>excel_deep_trace.py</code> is on the project libraries — "
+          + "replace it with the one from <code>rwa-calculation-webapp/python-lib/</code> and restart the backend.</span>";
+        return;
+      }
+      if (!s.total_formula_cells) {
+        $("#tr-summary").innerHTML = "<span class='warnbox'>This workbook has <b>no live Excel formulas</b> — "
+          + "the calculation recipe writes values only. Nothing to trace here.</span>";
+      } else {
+        $("#tr-summary").textContent =
+          `${s.total_formula_cells} formula cells · ${s.sheet_names.length} sheet(s) · `
+          + `${s.conditional_cells} conditional · ${s.lookup_cells} lookup · ${s.findings.total} finding(s)`;
+      }
       const sheetSel = $("#tr-sheet"); sheetSel.innerHTML = "";
       (s.sheet_names || []).forEach((n) => sheetSel.appendChild(el("option", { value: n, text: n })));
       // pick the sheet with the most formula cells
@@ -546,7 +570,10 @@
     $("#d-dtype").textContent = (t.root && t.root.dtype) || "";
     $("#d-sub").textContent = t.formula || "";
     const flags = $("#d-flags"); flags.innerHTML = "";
-    if (t.is_formula && t.tracer_reproduced_excel === false) {
+    if (t.is_formula && t.no_excel_value) {
+      flags.appendChild(el("div", { class: "flag info" }, [el("span", { text: "•" }),
+        el("span", { text: "This workbook stored no computed value for this cell — the value shown is the tracer's own evaluation of the formula." })]));
+    } else if (t.is_formula && t.tracer_reproduced_excel === false) {
       flags.appendChild(el("div", { class: "flag warn" }, [el("span", { text: "⚠" }),
         el("span", { html: `The tracer couldn't fully reproduce Excel's value (unsupported or volatile function). Headline shows Excel's saved value <b>${t.excel_value_repr}</b>; the breakdown below is partial.` })]));
     }

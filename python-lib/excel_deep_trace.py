@@ -42,7 +42,7 @@ from webapp_core.formula_trace import (
     _repr, _dtype, _json, _truthy, _is_empty, _num, _is_nan, _values_close,
 )
 
-ENGINE_BUILD = "rwa-deep-trace 2026.09"   # bump when the API surface changes
+ENGINE_BUILD = "rwa-deep-trace 2026.09b"  # bump when the API surface changes
 MAX_EXPANDED_RANGE_DEFAULT = 10000
 MAX_TREE_DEPTH_DEFAULT = 8
 
@@ -727,15 +727,21 @@ class _Eval:
         detail = {"key": key, "cell": n.a1, "sheet": sheet, "is_formula": rec is not None}
         if isinstance(raw, str) and raw in _ERROR_LITERALS:
             raw = XlError(raw)
-        if self.trace and rec is not None and rec.root is not None and depth < self.max_depth:
+        # Recurse into a referenced formula cell whenever we have no cached value for it
+        # (formula-only workbooks) or we're building the visual tree. Non-trace mode skips
+        # the recursion only when the cell already has a usable cached value.
+        recurse = (rec is not None and rec.root is not None and depth < self.max_depth
+                   and (self.trace or _is_empty(raw)))
+        if recurse:
             if key in self._stack:
-                return self._mk("cell", n, XlError("#REF!"), role, error="circular reference", **detail), XlError("#REF!")
+                return self._mk("cell", n, XlError("#REF!"), role,
+                                error="circular reference", **detail), XlError("#REF!")
             self._stack.add(key)
             try:
                 sub, subval = self.ev(rec.root, depth + 1, "ref")
             finally:
                 self._stack.discard(key)
-            node = self._mk("cell", n, subval, role, [sub], **detail)
+            node = self._mk("cell", n, subval, role, [sub] if self.trace else [], **detail)
             return node, subval
         if rec is not None:
             detail["collapsed_formula"] = rec.formula
@@ -1409,19 +1415,23 @@ class ExcelDeepTraceEngine:
         if_ids = {id(n): i for i, n in enumerate(x for x in rec.root.walk() if isinstance(x, If))}
         ev = _Eval(self, trace=True, max_depth=max_depth, if_ids=if_ids)
         root, val = ev.ev(rec.root, 0, "root")
-        mismatch = not _values_close(
-            val.code if _is_err(val) else val,
-            cached if not (isinstance(cached, str) and cached in _ERROR_LITERALS) else cached)
-        if _is_err(val) and isinstance(cached, str) and cached in _ERROR_LITERALS:
-            mismatch = val.code != cached
-        elif _is_err(val):
-            mismatch = True
+        no_excel_value = _is_empty(cached)
+        if no_excel_value:
+            # workbook stored no cached result for this cell - nothing to check against
+            mismatch = False
+        else:
+            mismatch = not _values_close(val.code if _is_err(val) else val, cached)
+            if _is_err(val) and isinstance(cached, str) and cached in _ERROR_LITERALS:
+                mismatch = val.code != cached
+            elif _is_err(val):
+                mismatch = True
         return {
             "key": k, "is_formula": True, "formula": rec.formula,
             "family": rec.family, "functions": rec.functions,
             "value": _json(val), "value_repr": (val.code if _is_err(val) else _repr(val)),
             "excel_value": _json(cached), "excel_value_repr": _repr(cached),
             "tracer_reproduced_excel": not mismatch,
+            "no_excel_value": no_excel_value,
             "notes": ev.notes,
             "narrative": _narrate(root, k, cached),
             "root": root,
@@ -1449,9 +1459,10 @@ class ExcelDeepTraceEngine:
             ba = self.branch_analysis(key) or {}
             la = self.lookup_analysis(key) or {}
             tree = self.expression_tree(key)
+            shown = cached if not _is_empty(cached) else tree.get("value")
             cells.append({
                 "cell": a1, "key": key, "header": header,
-                "formula": rec.formula, "value": _json(cached), "value_repr": _repr(cached),
+                "formula": rec.formula, "value": _json(shown), "value_repr": _repr(shown),
                 "family": rec.family, "functions": rec.functions,
                 "is_conditional": rec.is_conditional, "is_lookup": rec.is_lookup,
                 "branches": ba.get("branches", []),
@@ -1466,10 +1477,8 @@ class ExcelDeepTraceEngine:
     def compare_cells(self, left: str, right: str) -> Dict[str, Any]:
         lk, lrec = self._root_or_none(left)
         rk, rrec = self._root_or_none(right)
-        ls, la1 = lk.split("!", 1)
-        rs, ra1 = rk.split("!", 1)
-        lv = self._book.cached(ls, la1)
-        rv = self._book.cached(rs, ra1)
+        lv = self._cell_value_or_eval(lk)
+        rv = self._cell_value_or_eval(rk)
         ln, rn = _num(lv), _num(rv)
         diff = (float(ln) - float(rn)) if isinstance(ln, (int, float)) and isinstance(rn, (int, float)) else None
         lp = lrec.precedents if lrec else set()
@@ -1494,6 +1503,50 @@ class ExcelDeepTraceEngine:
 
     def narrate(self, key: str) -> List[str]:
         return self.expression_tree(key).get("narrative", [])
+
+    # ---------------------------------------------------------------- evaluated values
+    def _cell_value_or_eval(self, key: str) -> Any:
+        """The workbook's cached value if it has one, otherwise evaluate the cell's
+        formula. This is what makes formula-only workbooks (no cached results, which is
+        what openpyxl writes) usable for comparison and the row journey."""
+        sheet, a1 = key.split("!", 1)
+        cached = self._book.cached(sheet, a1)
+        if not _is_empty(cached) or key not in self.records:
+            return cached
+        rec = self.records[key]
+        if rec.root is None:
+            return cached
+        try:
+            v = _Eval(self, trace=False, max_depth=64).value(rec.root)
+        except Exception:  # noqa: BLE001
+            return cached
+        return cached if _is_err(v) else v
+
+    def evaluate_sheet(self, sheet: str, max_rows: int = 20000) -> Dict[str, Any]:
+        """The sheet as a table with **every formula evaluated** (input cells kept as-is).
+        Returns ``{sheet, header_row, headers, rows}`` - the backend turns it into a
+        DataFrame for the comparison."""
+        info = self.sheet_columns(sheet)
+        real, hr = info["sheet"], info["header_row"]
+        ws = self._book.wb_values[real]
+        cols = info["columns"]
+        headers = [c["name"] or ("Column_%s" % c["letter"]) for c in cols]
+        last = min(ws.max_row or hr, hr + int(max_rows))
+        rows: List[list] = []
+        for r in range(hr + 1, last + 1):
+            vals, blank = [], True
+            for c in cols:
+                key = "%s!%s%d" % (real, c["letter"], r)
+                if key in self.records:
+                    v = self._cell_value_or_eval(key)
+                else:
+                    v = ws.cell(row=r, column=c["index"]).value
+                if not _is_empty(v):
+                    blank = False
+                vals.append(_json(v))
+            if not blank:
+                rows.append(vals)
+        return {"sheet": real, "header_row": hr, "headers": headers, "rows": rows}
 
     # ---------------------------------------------------------------- columns / mismatch
     def sheet_columns(self, sheet: str) -> Dict[str, Any]:
@@ -1525,11 +1578,13 @@ class ExcelDeepTraceEngine:
             raise ValueError("column %r not found on sheet %r" % (spec, info["sheet"]))
 
         lc, rc = resolve(left), resolve(right)
-        ws = self._book.wb_values[info["sheet"]]
+        real = info["sheet"]
+        ws = self._book.wb_values[real]
+        ll, rl = idx_to_col(lc), idx_to_col(rc)
         out = []
         for r in range(info["header_row"] + 1, (ws.max_row or 1) + 1):
-            lv = ws.cell(row=r, column=lc).value
-            rv = ws.cell(row=r, column=rc).value
+            lv = self._cell_value_or_eval("%s!%s%d" % (real, ll, r))
+            rv = self._cell_value_or_eval("%s!%s%d" % (real, rl, r))
             if _is_empty(lv) and _is_empty(rv):
                 continue
             ln, rn = _num(lv), _num(rv)
