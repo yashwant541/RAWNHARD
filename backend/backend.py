@@ -3243,15 +3243,8 @@ def api_health():
 
 
 # =============================================================================
-# RWA webapp additions - admin (folders + recipe name) & deep-trace routes
-# Appended block. Adds:
-#   /api/login  /api/admin/change-credentials  /api/admin/config
-#   /api/admin/category/<key>  /api/whoami
-#   /excel-trace/open-output  /excel-trace/columns
-#   /excel-trace/mismatch-rows  /excel-trace/expression-tree
-# Config persisted in the managed folder named by project variable
-# RWA_WEBAPP_CONFIG_FOLDER and merged over CATEGORY_CONFIG in memory.
-# Needs webapp_core and excel_deep_trace on the project Python libraries.
+# RWA webapp additions - admin, deep-trace routes, comparison -> TEMPLATE folder
+# (redefines compare_all_category_outputs / get_category_output_schema)
 # =============================================================================
 
 from webapp_core import auth as _auth
@@ -3434,31 +3427,45 @@ def excel_trace_open_output():
     body = request.get_json(force=True, silent=True) or {}
     category = body.get("category")
     path = body.get("path")
-    folder_type = body.get("folder_type", "output")
+    folder_type = body.get("folder_type", "template")
 
     if not category or not path:
         return json_error("category and path are required.")
+
+    session_directory = None
     try:
         category_key, _ = get_category_config(category)
         folder = get_folder(category_key, folder_type)
         content = read_managed_folder_file(folder, normalize_folder_path(path))
 
-        engine = ExcelDeepTraceEngine(
-            workbook_bytes=content,
-            filename=os.path.basename(path),
-            max_expanded_range=DEFAULT_MAX_EXPANDED_RANGE,
-        )
+        # write the workbook to a temp file and open it by path - same as
+        # /excel-trace/analyze, and works with any ExcelDeepTraceEngine build.
+        import tempfile
+        safe_name = os.path.basename(path).replace("/", "_").replace("\\", "_") or "workbook.xlsx"
+        session_directory = tempfile.mkdtemp(prefix="excel_deep_trace_")
+        workbook_path = os.path.join(session_directory, safe_name)
+        with open(workbook_path, "wb") as fh:
+            fh.write(content if isinstance(content, bytes) else bytes(content))
+
+        try:
+            engine = ExcelDeepTraceEngine(workbook_path,
+                                         max_expanded_range=DEFAULT_MAX_EXPANDED_RANGE)
+        except TypeError:
+            engine = ExcelDeepTraceEngine(workbook_path)
         summary = engine.scan()
 
         session_id = uuid.uuid4().hex
         with TRACE_SESSION_LOCK:
             TRACE_SESSIONS[session_id] = {
-                "session_id": session_id, "engine": engine, "directory": None,
-                "filename": os.path.basename(path), "category": category_key,
+                "session_id": session_id, "engine": engine, "directory": session_directory,
+                "workbook_path": workbook_path, "filename": safe_name, "category": category_key,
             }
         return jsonify({"success": True, "session_id": session_id,
-                        "filename": os.path.basename(path), "summary": summary})
+                        "filename": safe_name, "summary": summary})
     except Exception as exc:  # noqa: BLE001
+        if session_directory:
+            import shutil
+            shutil.rmtree(session_directory, ignore_errors=True)
         return json_error("Could not open the output workbook.", status=500, details=str(exc))
 
 
@@ -3501,3 +3508,130 @@ def excel_trace_expression_tree():
         return json_error(str(exc), status=404)
     except Exception as exc:  # noqa: BLE001
         return json_error("Expression tree failed.", status=500, details=str(exc))
+
+
+# --------------------------------------------------- comparison runs on the TEMPLATE folder
+# The workbooks in the TEMPLATE folder carry the live Excel formulas, so a mismatched row
+# found by the comparison can be walked node-by-node in the Trace page.  These
+# redefinitions take precedence over the originals earlier in the file (Python: last
+# definition wins; the routes call them by name at request time).
+
+_RWA_COMPARE_FOLDER = "template"
+
+
+def _rwa_is_template_workbook(file_record):
+    name = str(file_record.get("filename", ""))
+    if name.startswith("~$") or name.startswith("."):
+        return False
+    return get_extension(name) in {".xlsx", ".xlsm"} and "_COMPARISON_" not in name.upper()
+
+
+def _rwa_compare_source(category_key):
+    """(folder, [file_records], source_name) - the TEMPLATE folder, falling back to the
+    OUTPUT folder if the template folder has no usable workbooks."""
+    try:
+        folder = get_folder(category_key, _RWA_COMPARE_FOLDER)
+        files = [f for f in list_folder_files(folder, {".xlsx", ".xlsm"}, True)
+                 if _rwa_is_template_workbook(f)]
+        if files:
+            return folder, files, _RWA_COMPARE_FOLDER
+    except Exception:  # noqa: BLE001 - template folder not configured for this category
+        pass
+    folder = get_folder(category_key, "output")
+    files = [f for f in list_folder_files(folder, {".xlsx"}, True) if is_primary_rwa_output(f)]
+    return folder, files, "output"
+
+
+def _rwa_values_frame(content, filename, expected_columns=None):
+    """Read an .xlsx/.xlsm as its LAST CACHED VALUES (openpyxl data_only) so the
+    comparison sees numbers, not '=A2*B2' strings - through the same header detection
+    the rest of the backend uses."""
+    import openpyxl as _oxl
+    if get_extension(filename) not in {".xlsx", ".xlsm"}:
+        return read_tabular_content(content, filename, sheet_name=0,
+                                    expected_columns=expected_columns, max_header_scan_rows=100)
+    wb = _oxl.load_workbook(io.BytesIO(content), data_only=True, read_only=True)
+    ws = wb[wb.sheetnames[0]]
+    raw = pd.DataFrame([list(r) for r in ws.iter_rows(values_only=True)])
+    wb.close()
+    raw = raw.dropna(how="all").reset_index(drop=True)
+    header_row = detect_header_row(raw, expected_columns, 100)
+    header_values = list(raw.iloc[header_row])
+    data = raw.iloc[header_row + 1:].copy()
+    data.columns = header_values
+    data = data.dropna(how="all")                 # drop all-empty ROWS; keep all-NaN COLS
+    data = standardize_dataframe_columns(data)     # so a formula column with no cached
+    data.attrs["detected_header_row"] = int(header_row + 1)   # value still shows up
+    return data
+
+
+def get_category_output_schema(category):
+    category_key, config = get_category_config(category)
+    folder, files, source = _rwa_compare_source(category_key)
+    if not files:
+        return {"category": category_key, "columns": [], "file_count": 0,
+                "detected_header_row": None, "source_folder": source}
+    content = read_managed_folder_file(folder, files[0]["path"])
+    frame = (_rwa_values_frame(content, files[0]["filename"]) if source == "template"
+             else read_tabular_content(content, files[0]["filename"], sheet_name=0,
+                                       max_header_scan_rows=100))
+    return {"category": category_key, "columns": list(frame.columns),
+            "file_count": len(files),
+            "detected_header_row": frame.attrs.get("detected_header_row"),
+            "source_folder": source}
+
+
+def compare_all_category_outputs(category, raw_rules):
+    category_key, config = get_category_config(category)
+    folder, files, source = _rwa_compare_source(category_key)
+    if not files:
+        raise ValueError("No produced workbooks for this category (looked in the %s "
+                         "folder). Run the calculation first." % source)
+
+    def read_frame(fr, expected=None):
+        content = read_managed_folder_file(folder, fr["path"])
+        if source == "template":
+            return _rwa_values_frame(content, fr["filename"], expected)
+        return read_tabular_content(content, fr["filename"], sheet_name=0,
+                                    expected_columns=expected, max_header_scan_rows=100)
+
+    expected = list(read_frame(files[0]).columns)
+    rules = validate_user_comparison_rules(raw_rules, expected)
+    frames, header_rows, warnings = [], [], []
+    for fr in files:
+        frame = read_frame(fr, expected)
+        actual = list(frame.columns)
+        if actual != expected:
+            raise ValueError("Schema mismatch in '%s'. Missing: %s. Extra: %s." % (
+                fr["filename"], [c for c in expected if c not in actual],
+                [c for c in actual if c not in expected]))
+        for rule in rules:
+            for col in (rule["left_column"], rule["right_column"]):
+                if col in frame.columns and frame[col].isna().all():
+                    warnings.append("'%s' in %s has no cached values - the recipe may "
+                                    "write formulas without values." % (col, fr["filename"]))
+        hr = int(frame.attrs.get("detected_header_row", 1))
+        header_rows.append({"file": fr["filename"], "header_row": hr})
+        compared, _ = apply_comparison_rules(frame, rules)
+        compared.insert(0, "SOURCE_ROW_NUMBER", range(hr + 1, hr + 1 + len(compared)))
+        compared.insert(0, "SOURCE_OUTPUT_FILE", fr["filename"])
+        frames.append(compared)
+
+    result = pd.concat(frames, ignore_index=True, sort=False)
+    total = len(result)
+    mismatches = int((result["OVERALL_VALIDATION_STATUS"] == "MISMATCH").sum())
+    matches = total - mismatches
+    safe = re.sub(r"[^A-Za-z0-9]+", "_", config["display_name"]).strip("_")
+    filename = "%s_COMPARISON_%s.xlsx" % (safe, datetime.now().strftime("%Y%m%d_%H%M%S"))
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        result.to_excel(writer, sheet_name="Comparison", index=False)
+        autosize_worksheet(writer.book["Comparison"], result)
+    buf.seek(0)
+    get_folder(category_key, "output").upload_stream(normalize_folder_path(filename), buf)
+    return {"category": category_key, "source_folder": source,
+            "files_compared": len(files), "total_rows": int(total),
+            "matched_rows": int(matches), "mismatched_rows": mismatches,
+            "match_rate": round(matches / total * 100, 4) if total else None,
+            "comparison_file": filename, "detected_headers": header_rows,
+            "warnings": sorted(set(warnings))}

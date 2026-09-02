@@ -42,6 +42,7 @@ from webapp_core.formula_trace import (
     _repr, _dtype, _json, _truthy, _is_empty, _num, _is_nan, _values_close,
 )
 
+ENGINE_BUILD = "rwa-deep-trace 2026.09"   # bump when the API surface changes
 MAX_EXPANDED_RANGE_DEFAULT = 10000
 MAX_TREE_DEPTH_DEFAULT = 8
 
@@ -1166,6 +1167,7 @@ class ExcelDeepTraceEngine:
             sheets.append({"name": ws.title, "rows": ws.max_row, "columns": ws.max_column,
                            "formula_cells": n})
         return {
+            "engine_build": ENGINE_BUILD,
             "filename": self.filename,
             "sheet_names": list(self.wb_formula.sheetnames),
             "sheets": sheets,
